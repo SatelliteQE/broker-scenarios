@@ -22,16 +22,11 @@ jobs:
           # Use the default GITHUB_TOKEN; commits authored as github-actions[bot]
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.x"
-
-      - name: Install PyYAML
-        run: pip install pyyaml
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
 
       - name: Regenerate metadata.yaml
-        run: python scripts/generate_metadata.py
+        run: uv run scripts/generate_metadata.py
 
       - name: Commit updated metadata if changed
         run: |

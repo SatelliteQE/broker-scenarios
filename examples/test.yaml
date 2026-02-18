@@ -1,0 +1,47 @@
+# yaml-language-server: $schema=scenario_schema.json
+
+config:
+  inventory_path: "test_scenario_inventory.yaml" # Persistent file, distinct from main Broker inventory
+  settings:
+    AnsibleTower:
+      dangling_behavior: store
+    ssh:
+      backend: hussh
+      host_username: root
+
+steps:
+  - name: Checkout some hosts
+    action: checkout  # these actions mostly correspond to Broker's top-level functionality (checkout, checkin, execute, inventory)
+    arguments:  # basic arguments will be the same as when used via the cli or library version of Broker
+      workflow: deploy-rhel
+      count: 2
+  - name: Run some command
+    action: ssh  # actions like ssh, scp, sftp are implemented using the Host object's (ssh) Session interface
+    arguments:
+      command: "ls /root/"
+    with:
+      hosts: scenario_inventory  # the scenario will implicitly keep track of its hosts inventory
+    capture:
+      as: ls_out  # With multiple hosts, this is a Dict{hostname: Result}
+    on_error:  # you can also nest any arbitrary number of steps under error nodes
+      - name: Cleanup on failure
+        action: checkin
+        with:
+          hosts: scenario_inventory
+      - name: Prematurely exit the scenario
+        action: exit  # By default, steps with an on_error condition won't exit (we assume you'll handle it cleanly)
+        arguments:
+          return_code: 19
+          message: "ssh command failed"
+  - name: Output results per host
+    action: output
+    arguments:
+      content: "Host {{ hostname }}: {{ result.stdout.strip() }}"
+      destination: stdout  # can also be "stderr" or a file path
+    loop:
+      iterable: ls_out.items()  # iterate over the captured dict of {hostname: Result}
+      iter_var: hostname, result
+  - name: Checkin scenario hosts
+    action: checkin
+    with:
+      hosts: scenario_inventory

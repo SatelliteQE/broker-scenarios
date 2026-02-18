@@ -1,0 +1,9 @@
+steps:
+  - name: Sync AnsibleTower
+    action: inventory
+    arguments:
+      sync: AnsibleTower
+  - name: Checkin all hosts
+    action: checkin
+    with:
+      hosts: inventory

@@ -6,7 +6,7 @@ Scenarios are reusable YAML workflows that drive broker actions such as checking
 
 ---
 
-## Using Scenarios
+## Using Scenarios (Not Yet Implemented)
 
 Import scenarios directly into your local broker installation:
 
@@ -45,7 +45,7 @@ broker-scenarios/
 │   └── maintenance/                    # Tower maintenance and cleanup
 ├── container/
 │   └── testing/                        # Container smoke tests and validation
-├── shared/                             # Multi-provider or utility scenarios
+├── common/                             # Multi-provider or utility scenarios
 └── examples/                           # Tutorial-focused introductory scenarios
 ```
 

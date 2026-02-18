@@ -1,3 +1,9 @@
+# /// script
+# requires-python = ">=3.14"
+# dependencies = [
+#     "ruamel-yaml>=0.19.1",
+# ]
+# ///
 """Generate metadata.yaml from all scenario files in the repository.
 
 This script is intended to be run by automation only (see .github/workflows/update-metadata.yml).
@@ -9,16 +15,27 @@ modification of metadata.yaml.
 """
 
 import datetime
+import io
 import pathlib
 import sys
 
-import yaml
+from ruamel.yaml import YAML
+
+_loader = YAML(typ="safe", pure=True)
+_dumper = YAML()
+_dumper.default_flow_style = False
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 EXCLUDED_DIRS = {".github", "scripts", ".git"}
-EXCLUDED_FILES = {"metadata.yaml"}
+
+# Non-scenario YAML files that should never appear in metadata.
+# Add any repo-root or nested config files here as the repo grows.
+EXCLUDED_FILES = {
+    "metadata.yaml",
+    ".pre-commit-config.yaml",
+}
 
 
 def find_scenario_files(root):
@@ -44,7 +61,7 @@ def extract_scenario_entry(path, root):
 
     try:
         with open(path) as f:
-            data = yaml.safe_load(f) or {}
+            data = _loader.load(f) or {}
     except Exception as exc:
         print(f"Warning: could not parse {rel}: {exc}", file=sys.stderr)
         data = {}
@@ -84,15 +101,11 @@ def write_metadata(root, metadata):
         "# Do NOT edit it manually — your changes will be overwritten on the next push to master.\n"
         "# See .github/workflows/update-metadata.yml for the generation trigger.\n\n"
     )
-    content = yaml.dump(
-        metadata,
-        default_flow_style=False,
-        allow_unicode=True,
-        sort_keys=True,
-    )
+    stream = io.StringIO()
+    _dumper.dump(dict(sorted(metadata.items())), stream)
     with open(out_path, "w") as f:
         f.write(header)
-        f.write(content)
+        f.write(stream.getvalue())
     print(f"Wrote {out_path} ({len(metadata['scenarios'])} scenarios)")
 
 

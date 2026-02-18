@@ -33,7 +33,11 @@ jobs:
           set -euo pipefail
           files=$(git diff --name-only --diff-filter=AM origin/${{ github.base_ref }}...HEAD | grep -E '\.ya?ml$' || true)
           for file in $files; do
+            # Skip bot-managed and repo-config files — not broker scenarios
             [[ "$file" == "metadata.yaml" ]] && continue
+            [[ "$file" == ".pre-commit-config.yaml" ]] && continue
+            [[ "$file" == .github/* ]] && continue
+            [[ "$file" == scripts/* ]] && continue
             broker scenarios validate "$file" | tee /tmp/validate.out
             if grep -q "is invalid" /tmp/validate.out; then
               exit 1
