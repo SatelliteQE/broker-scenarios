@@ -1,0 +1,21 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-yaml
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+
+  - repo: local
+    hooks:
+      - id: validate-scenarios
+        name: validate changed scenarios with broker
+        language: system
+        entry: scripts/validate_changed_scenarios.sh
+        pass_filenames: false
+
+      - id: deny-manual-metadata-edit
+        name: block manual metadata updates
+        language: system
+        entry: bash -c 'git diff --cached --name-only | grep -q "^metadata.yaml$" && { echo "metadata.yaml is bot-managed"; exit 1; } || exit 0'
+        pass_filenames: false

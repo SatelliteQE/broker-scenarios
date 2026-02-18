@@ -1,0 +1,46 @@
+name: Update Metadata
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - "**/*.yaml"
+      - "**/*.yml"
+    paths-ignore:
+      - "metadata.yaml"
+
+jobs:
+  regenerate-metadata:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # Use the default GITHUB_TOKEN; commits authored as github-actions[bot]
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install PyYAML
+        run: pip install pyyaml
+
+      - name: Regenerate metadata.yaml
+        run: python scripts/generate_metadata.py
+
+      - name: Commit updated metadata if changed
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet metadata.yaml; then
+            echo "metadata.yaml unchanged — nothing to commit"
+          else
+            git add metadata.yaml
+            git commit -m "chore: regenerate metadata.yaml [skip ci]"
+            git push
+          fi
