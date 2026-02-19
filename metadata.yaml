@@ -2,6 +2,22 @@
 # Do NOT edit it manually — your changes will be overwritten on the next push to master.
 # See .github/workflows/update-metadata.yml for the generation trigger.
 
+generated_at: '2026-02-19T05:32:40Z'
+scenarios:
+- path: common/sync_checkin_all.yaml
+  name: sync_checkin_all
+  provider: common
+- path: container/testing/comprehensive_container_test.yaml
+  name: comprehensive_container_test
+  provider: container
+  category: testing
+- path: examples/deploy_checkin_containers.yaml
+  name: deploy_checkin_containers
+  provider: examples
+- path: examples/deploy_details.yaml
+  name: deploy_details
+  provider: examples
+- path: examples/test.yaml
+  name: test
+  provider: examples
 schema_version: 1
-generated_at: "2026-02-18T00:00:00Z"
-scenarios: []
