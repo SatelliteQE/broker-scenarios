@@ -1,3 +1,4 @@
+description: Sync inventory from AnsibleTower and checkin all hosts.
 steps:
   - name: Sync AnsibleTower
     action: inventory

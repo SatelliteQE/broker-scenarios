@@ -1,12 +1,14 @@
 # broker-scenarios
 
-Community scenario repository for the [broker](https://github.com/SatelliteQE/broker) provisioning framework.
+Community scenario repository for [Broker](https://github.com/SatelliteQE/broker).
 
-Scenarios are reusable YAML workflows that drive broker actions such as checking out hosts, running commands over SSH, collecting inventory, and more. This repository provides a curated, validated collection of scenarios organized by provider.
+Scenarios are reusable YAML workflows that drive broker actions such as checking out hosts, running commands over SSH, collecting inventory, and more. This repository provides a curated, validated collection of scenarios organized by category.
+
+The scenarios in this repo can either be copied locally or imported via `broker scenarios import` in the near future.
 
 ---
 
-## Using Scenarios (Not Yet Implemented)
+## Importing Scenarios (Not Yet Implemented)
 
 Import scenarios directly into your local broker installation:
 
@@ -30,18 +32,18 @@ broker scenarios import SatelliteQE/broker-scenarios --update
 broker scenarios import --list-imported
 ```
 
-Scenarios are stored locally under `~/.broker/scenarios/`, preserving the provider/category directory structure.
+Scenarios are stored locally in your broker directory (usually `~/.broker/`), preserving the provider/category directory structure.
 
 ---
 
-## Directory Layout
+## Repo Directory Layout
 
 ```
 broker-scenarios/
 ├── README.md
 ├── metadata.yaml                       # Bot-managed — do not edit manually
 ├── ansibletower/
-│   ├── provisioning/                   # Checkout and provisioning workflows
+│   ├── post_deploy/                    # Scenarios that perform post-deploy actions
 │   └── maintenance/                    # Tower maintenance and cleanup
 ├── container/
 │   └── testing/                        # Container smoke tests and validation
@@ -49,11 +51,11 @@ broker-scenarios/
 └── examples/                           # Tutorial-focused introductory scenarios
 ```
 
-Each scenario lives at one of:
+Each provider scenario lives at one of:
 - `<provider>/<category>/<scenario-name>.yaml`
 - `<provider>/<scenario-name>.yaml` (provider-root scenarios)
 
-Imported scenarios mirror this path under `~/.broker/scenarios/`.
+Imported scenarios mirror this path under `~/{BROKER_DIRECTORY}/scenarios/`.
 
 ---
 
@@ -61,10 +63,6 @@ Imported scenarios mirror this path under `~/.broker/scenarios/`.
 
 1. **Fork** this repository and create a feature branch.
 2. **Add** your scenario YAML file in the appropriate provider/category directory.
-3. **Validate** locally before committing:
-   ```bash
-   broker scenarios validate path/to/your/scenario.yaml
-   ```
 4. **Install pre-commit hooks** (first time only):
    ```bash
    pip install pre-commit
@@ -75,11 +73,11 @@ Imported scenarios mirror this path under `~/.broker/scenarios/`.
 
 ### Scenario Format
 
-A scenario file requires at minimum a `steps` key. Full documentation for all available fields and actions is in the [broker docs](https://github.com/SatelliteQE/broker).
+A scenario file requires at minimum a `steps` key. Full documentation for all available fields and actions is in the [broker wiki](https://github.com/SatelliteQE/broker/wiki/Scenarios-Tutorial).
 
 ```yaml
 steps:
-  - name: Checkout a host
+  - name: Checkout a host with AnsibleTower
     action: checkout
     arguments:
       workflow: my-workflow
@@ -89,7 +87,7 @@ steps:
     with:
       hosts: scenario_inventory
     arguments:
-      cmd: "uname -a"
+      command: "uname -a"
 ```
 
 ### Notes for Contributors
