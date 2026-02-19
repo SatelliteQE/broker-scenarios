@@ -1,3 +1,4 @@
+description: Deploy all available container hosts then immediately check them in.
 config:
   log_path: deploy_containers.log
 steps:

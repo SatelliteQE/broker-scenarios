@@ -1,4 +1,4 @@
-# yaml-language-server: $schema=scenario_schema.json
+description: A simple scenario demonstrating basic checkout, ssh command execution, and checkin flow with error handling and result output.
 
 config:
   inventory_path: "test_scenario_inventory.yaml" # Persistent file, distinct from main Broker inventory

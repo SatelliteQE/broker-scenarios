@@ -1,3 +1,4 @@
+description: Retrieve details of AnsibleTower workflows related to deployment and output to a file.
 steps:
   - name: List workflows
     action: provider_info

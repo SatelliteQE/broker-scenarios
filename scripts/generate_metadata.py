@@ -55,8 +55,8 @@ def extract_scenario_entry(path, root):
     rel = path.relative_to(root)
     parts = rel.parts
 
-    provider = parts[0] if len(parts) >= 1 else None
-    category = parts[1] if len(parts) >= 3 else None
+    # The directories leading to the file are treated as categories.
+    categories = list(parts[:-1])
     name = path.stem
 
     try:
@@ -69,11 +69,8 @@ def extract_scenario_entry(path, root):
     entry = {
         "path": str(rel),
         "name": name,
+        "categories": categories,
     }
-    if provider:
-        entry["provider"] = provider
-    if category:
-        entry["category"] = category
     if "description" in data:
         entry["description"] = data["description"]
 

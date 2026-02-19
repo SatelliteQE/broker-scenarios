@@ -28,6 +28,7 @@
 #   broker scenarios execute comprehensive_container_test --CONTAINER_IMAGE ubi9 --HOST_COUNT 3
 #
 # Note: This scenario creates temporary files in /tmp and cleans up after itself.
+description: Comprehensive test of Container provider functionality with multiple hosts, commands, and file operations.
 
 config:
   # Custom inventory path for this scenario's hosts
