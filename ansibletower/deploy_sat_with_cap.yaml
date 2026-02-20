@@ -1,0 +1,45 @@
+description: "Deploy a Satellite and Capsule, then configure the Capsule to the Satellite"
+
+variables:
+  NET_TYPE: ipv4
+  RHEL_VER: null
+  SAT_VER: null
+  SNAP_VER: null
+
+steps:
+  - name: Deploy Satellite
+    action: checkout
+    arguments:
+      workflow: deploy-satellite
+      deploy_network_type: "{{ NET_TYPE }}"
+      deploy_rhel_version: "{{ RHEL_VER or None }}"
+      deploy_sat_version: "{{ SAT_VER or None }}"
+      deploy_snap_version: "{{ SNAP_VER or None }}"
+      note: "Sat with Cap"
+
+  - name: Deploy Capsule
+    action: checkout
+    arguments:
+      workflow: deploy-capsule
+      deploy_network_type: "{{ NET_TYPE }}"
+      deploy_rhel_version: "{{ RHEL_VER or None }}"
+      deploy_sat_version: "{{ SAT_VER or None }}"
+      deploy_snap_version: "{{ SNAP_VER or None }}"
+      note: "Cap with Sat"
+
+  - name: Bind the Capsule to the Satellite
+    action: execute
+    arguments:
+      workflow: satellite-capsule-integration
+      satellite_hostname: "{{ scenario_inventory[0].hostname }}"
+      satellite_name: "{{ scenario_inventory[0].name }}"
+      capsule_hostname: "{{ scenario_inventory[1].hostname }}"
+      capsule_name: "{{ scenario_inventory[1].name }}"
+
+  - name: Deployment Summary
+    action: output
+    arguments:
+      content: |
+        Deployment completed successfully!
+        Satellite: {{ scenario_inventory[0].hostname }}
+        Capsule:   {{ scenario_inventory[1].hostname }}
