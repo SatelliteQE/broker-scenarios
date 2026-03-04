@@ -1,0 +1,448 @@
+# Comprehensive AnsibleTower Provider Test Scenario
+#
+# This scenario exercises the full breadth of Broker scenarios functionality
+# using the AnsibleTower provider. It demonstrates:
+#
+# - provider_info queries (flag-style and value-style, including workflow descriptions)
+# - checkout with count, network type, version pins, and note
+# - ssh commands (single, looped over command list, parallel vs sequential)
+# - capture with custom keys and per-host dict unpacking via loop
+# - when conditions (simple and complex)
+# - on_error recovery steps and exit_on_error: false for non-critical steps
+# - execute with extend-lease and data_out inspection
+# - output to stdout, stderr, JSON file (overwrite), and text log (append)
+# - inventory sync from AnsibleTower
+# - full cleanup with error recovery
+#
+# Prerequisites:
+# - Broker configured with a valid AnsibleTower provider in broker_settings.yaml
+# - Access to the deploy-rhel workflow in the configured Tower instance
+#
+# Usage:
+#   broker scenarios execute comprehensive_ansibletower_test
+#   broker scenarios execute comprehensive_ansibletower_test --RHEL_VER 9.4 --NET_TYPE ipv6
+#   broker scenarios execute comprehensive_ansibletower_test --HOST_COUNT 3 --VERBOSE_OUTPUT true
+#   broker scenarios execute comprehensive_ansibletower_test --EXTEND_TIME "+606060"
+
+description: Comprehensive test of AnsibleTower provider functionality with multiple RHEL hosts, workflow queries, SSH commands, lease extension, and inventory operations.
+
+config:
+  # Custom inventory path keeps scenario hosts out of the main broker inventory
+  inventory_path: ~/.broker/comprehensive_at_test_inventory.yaml
+  # Scenario-specific log file
+  log_path: comprehensive_ansibletower_test.log
+  settings:
+    AnsibleTower:
+      # Keep hosts that can't be found during checkin rather than erroring
+      dangling_behavior: store
+      # Allow plenty of time for Tower workflows to finish
+      workflow_timeout: 3600
+    ssh:
+      host_username: root
+
+variables:
+  # RHEL deployment configuration - all nullable so Tower uses its defaults
+  RHEL_VER: null
+  NET_TYPE: ipv4
+  SNAP_VER: null
+
+  # Number of RHEL hosts to provision
+  HOST_COUNT: 2
+
+  # Amount of time to extend the lease on the first host (in seconds; +606060 = ~7 days)
+  EXTEND_TIME: "+606060"  # Extend lease by ~7 days (~168 hours)
+
+  # Commands to loop over and run on the first host
+  TEST_COMMANDS:
+    - "uname -a"
+    - "cat /etc/os-release"
+    - "df -h /"
+    - "uptime"
+
+  # Set to true to emit per-command and per-workflow-detail output
+  VERBOSE_OUTPUT: false
+
+steps:
+  # ============================================================================
+  # SECTION 1: Provider Info — Resource Lists (Flag-Style Queries)
+  # ============================================================================
+
+  - name: List all Tower workflows
+    action: provider_info
+    arguments:
+      provider: AnsibleTower
+      query: workflows
+    capture:
+      as: workflow_list
+
+  - name: List all Tower inventories
+    action: provider_info
+    arguments:
+      provider: AnsibleTower
+      query: inventories
+    capture:
+      as: inventory_list
+
+  - name: List all Tower job templates
+    action: provider_info
+    arguments:
+      provider: AnsibleTower
+      query: job_templates
+    capture:
+      as: template_list
+
+  - name: Display resource list summary
+    action: output
+    arguments:
+      content: |
+        AnsibleTower resource summary:
+          Workflows:     {{ workflow_list | length }}
+          Inventories:   {{ inventory_list | length }}
+          Job templates: {{ template_list | length }}
+      destination: stdout
+
+  # ============================================================================
+  # SECTION 2: Provider Info — Workflow Details (Value-Style / Provider Help)
+  # ============================================================================
+
+  - name: Get deploy-rhel workflow details
+    action: provider_info
+    arguments:
+      provider: AnsibleTower
+      query:
+        workflow: deploy-rhel
+    capture:
+      as: rhel_workflow_details
+
+  - name: Get deploy-satellite workflow details
+    action: provider_info
+    arguments:
+      provider: AnsibleTower
+      query:
+        workflow: deploy-satellite
+    capture:
+      as: sat_workflow_details
+    exit_on_error: false
+
+  - name: Get deploy-capsule workflow details
+    action: provider_info
+    arguments:
+      provider: AnsibleTower
+      query:
+        workflow: deploy-capsule
+    capture:
+      as: cap_workflow_details
+    exit_on_error: false
+
+  - name: Log deploy-rhel workflow description
+    action: output
+    arguments:
+      content: "deploy-rhel details: {{ rhel_workflow_details }}"
+      destination: stdout
+    when: VERBOSE_OUTPUT == true and rhel_workflow_details is defined
+
+  - name: Log deploy-satellite workflow description
+    action: output
+    arguments:
+      content: "deploy-satellite details: {{ sat_workflow_details }}"
+      destination: stdout
+    when: VERBOSE_OUTPUT == true and sat_workflow_details is defined
+
+  - name: Log deploy-capsule workflow description
+    action: output
+    arguments:
+      content: "deploy-capsule details: {{ cap_workflow_details }}"
+      destination: stdout
+    when: VERBOSE_OUTPUT == true and cap_workflow_details is defined
+
+  - name: Save workflow details to file
+    action: output
+    arguments:
+      content:
+        deploy_rhel: "{{ rhel_workflow_details }}"
+        deploy_satellite: "{{ sat_workflow_details if sat_workflow_details is defined else None }}"
+        deploy_capsule: "{{ cap_workflow_details if cap_workflow_details is defined else None }}"
+      destination: /tmp/broker_at_workflow_details.json
+      mode: overwrite
+
+  # ============================================================================
+  # SECTION 3: RHEL Checkout
+  # ============================================================================
+
+  - name: Provision RHEL hosts
+    action: checkout
+    arguments:
+      workflow: deploy-rhel
+      deploy_network_type: "{{ NET_TYPE }}"
+      deploy_rhel_version: "{{ RHEL_VER or None }}"
+      deploy_snap_version: "{{ SNAP_VER or None }}"
+      count: "{{ HOST_COUNT }}"
+      note: "AT comprehensive test"
+    on_error:
+      - name: Log checkout failure
+        action: output
+        arguments:
+          content: "ERROR: Failed to checkout RHEL hosts. Verify Tower connectivity and workflow availability."
+          destination: stderr
+      - name: Exit on checkout failure
+        action: exit
+        arguments:
+          return_code: 10
+          message: "RHEL checkout failed - cannot continue tests"
+
+  - name: Confirm hosts provisioned
+    action: output
+    arguments:
+      content: "Successfully provisioned {{ scenario_inventory | length }} RHEL host(s)"
+      destination: stdout
+
+  # ============================================================================
+  # SECTION 4: Basic SSH Commands
+  # ============================================================================
+
+  - name: Collect hostnames from all hosts
+    action: ssh
+    arguments:
+      command: "hostname"
+    with:
+      hosts: scenario_inventory
+    parallel: true
+    capture:
+      as: hostnames
+
+  - name: Collect uname from all hosts
+    action: ssh
+    arguments:
+      command: "uname -a"
+    with:
+      hosts: scenario_inventory
+    parallel: true
+    capture:
+      as: uname_results
+
+  - name: Collect RHEL release info from all hosts
+    action: ssh
+    arguments:
+      command: "cat /etc/redhat-release 2>/dev/null || head -3 /etc/os-release"
+    with:
+      hosts: scenario_inventory
+    parallel: true
+    capture:
+      as: rhel_version_results
+
+  - name: Output per-host hostname results
+    action: output
+    arguments:
+      content: "Host {{ hostname }}: {{ result.stdout.strip() }}"
+      destination: stdout
+    loop:
+      iterable: hostnames.items()
+      iter_var: hostname, result
+
+  - name: Output per-host RHEL version
+    action: output
+    arguments:
+      content: "{{ hostname }} OS: {{ result.stdout.strip() }}"
+      destination: stdout
+    loop:
+      iterable: rhel_version_results.items()
+      iter_var: hostname, result
+    when: VERBOSE_OUTPUT == true
+
+  # ============================================================================
+  # SECTION 5: SSH Loop Over Commands (First Host Only)
+  # ============================================================================
+
+  - name: Run test command suite on first host
+    action: ssh
+    arguments:
+      command: "{{ cmd }}"
+    loop:
+      iterable: TEST_COMMANDS
+      iter_var: cmd
+      on_error: continue
+    with:
+      hosts: "@scenario_inv[0]"
+    capture:
+      as: command_outputs
+      key: cmd
+
+  - name: Log per-command output (verbose)
+    action: output
+    arguments:
+      content: "  [{{ cmd }}] => {{ result.stdout.strip() }}"
+      destination: stdout
+    loop:
+      iterable: command_outputs.items()
+      iter_var: cmd, result
+    when: VERBOSE_OUTPUT == true
+
+  # ============================================================================
+  # SECTION 6: Parallel vs Sequential Execution
+  # ============================================================================
+
+  - name: Parallel SSH across all hosts
+    action: ssh
+    arguments:
+      command: "sleep 1 && echo 'parallel from $(hostname)'"
+    with:
+      hosts: scenario_inventory
+    parallel: true
+    capture:
+      as: parallel_results
+
+  - name: Sequential SSH across all hosts
+    action: ssh
+    arguments:
+      command: "echo 'sequential from $(hostname)'"
+    with:
+      hosts: scenario_inventory
+    parallel: false
+    capture:
+      as: sequential_results
+
+  - name: Report sequential execution status per host
+    action: output
+    arguments:
+      content: "  {{ hostname }} exit status: {{ result.status }}"
+      destination: stdout
+    loop:
+      iterable: sequential_results.items()
+      iter_var: hostname, result
+    when: sequential_results is defined and sequential_results is mapping
+
+  # ============================================================================
+  # SECTION 7: Extend Lease
+  # ============================================================================
+
+  - name: Extend lease on first host
+    action: execute
+    arguments:
+      workflow: extend-vm
+      target_vm: "{{ scenario_inventory[0].name }}"
+      new_expire_time: "{{ EXTEND_TIME }}"
+    capture:
+      as: lease_result
+    exit_on_error: false
+
+  - name: Report lease extension result
+    action: output
+    arguments:
+      content: "Lease extension result for {{ scenario_inventory[0].name }}: {{ lease_result }}"
+      destination: stdout
+    when: lease_result is defined
+
+  - name: Note if lease extension was skipped
+    action: output
+    arguments:
+      content: "Note: Lease extension was skipped or failed (non-critical)"
+      destination: stdout
+    when: lease_result is not defined
+
+  # ============================================================================
+  # SECTION 8: Structured Output
+  # ============================================================================
+
+  - name: Save test summary to JSON
+    action: output
+    arguments:
+      content:
+        scenario_name: comprehensive_ansibletower_test
+        hosts_provisioned: "{{ scenario_inventory | length }}"
+        rhel_version: "{{ RHEL_VER }}"
+        net_type: "{{ NET_TYPE }}"
+        snap_version: "{{ SNAP_VER }}"
+        test_commands_run: "{{ TEST_COMMANDS }}"
+        extend_time: "{{ EXTEND_TIME }}"
+        parallel_tests_run: true
+        verbose_output: "{{ VERBOSE_OUTPUT }}"
+      destination: /tmp/broker_at_test_results.json
+      mode: overwrite
+
+  - name: Append completion marker to log file
+    action: output
+    arguments:
+      content: "AT comprehensive test run completed with {{ scenario_inventory | length }} host(s)"
+      destination: /tmp/broker_at_test_log.txt
+      mode: append
+
+  # ============================================================================
+  # SECTION 9: Inventory Sync
+  # ============================================================================
+
+  - name: Sync AnsibleTower inventory
+    action: inventory
+    arguments:
+      sync: AnsibleTower
+    capture:
+      as: synced_inventory
+    exit_on_error: false
+
+  - name: Report synced inventory size
+    action: output
+    arguments:
+      content: "AnsibleTower inventory sync found {{ synced_inventory | length }} host(s) in main broker inventory"
+      destination: stdout
+    when: synced_inventory is defined
+
+  - name: Note if inventory sync was skipped
+    action: output
+    arguments:
+      content: "Note: AnsibleTower inventory sync skipped or failed (non-critical)"
+      destination: stdout
+    when: synced_inventory is not defined
+
+  # ============================================================================
+  # SECTION 10: Cleanup
+  # ============================================================================
+
+  - name: Remove temporary files from hosts
+    action: ssh
+    arguments:
+      command: "rm -f /tmp/broker_at_test_* 2>/dev/null; echo 'cleanup done'"
+    with:
+      hosts: scenario_inventory
+    exit_on_error: false
+
+  - name: Final summary output
+    action: output
+    arguments:
+      content: |
+
+        ============================================
+        COMPREHENSIVE ANSIBLETOWER TEST COMPLETE
+        ============================================
+        Hosts tested:    {{ scenario_inventory | length }}
+        RHEL version:    {{ RHEL_VER or "Tower default" }}
+        Network type:    {{ NET_TYPE }}
+        Results saved:   /tmp/broker_at_test_results.json
+        ============================================
+      destination: stdout
+
+  - name: Release all RHEL hosts
+    action: checkin
+    with:
+      hosts: scenario_inventory
+    on_error:
+      - name: Log checkin failure
+        action: output
+        arguments:
+          content: "WARNING: Failed to release some hosts. Manual cleanup may be required."
+          destination: stderr
+      - name: Sync inventory after failed checkin
+        action: inventory
+        arguments:
+          sync: AnsibleTower
+        capture:
+          as: remaining_inventory
+      - name: Exit with warning
+        action: exit
+        arguments:
+          return_code: 5
+          message: "Scenario completed but host cleanup failed"
+
+  - name: Confirm all hosts released
+    action: output
+    arguments:
+      content: "All RHEL hosts successfully released. Scenario complete!"
+      destination: stdout

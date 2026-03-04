@@ -1,0 +1,203 @@
+# AnsibleTower Provider Smoke Test
+#
+# End-to-end validation of the AnsibleTower provider's core functionality:
+#
+# - provider_info queries (workflow list and a specific workflow detail)
+# - checkout via a Tower workflow
+# - one SSH connectivity check
+# - execute (extend-vm workflow)
+# - inventory sync
+# - checkin / cleanup
+#
+# Usage:
+#   broker scenarios execute smoke_ansibletower_test
+#   broker scenarios execute smoke_ansibletower_test --RHEL_VER 9.4
+
+description: Smoke test for the AnsibleTower provider covering provider_info, checkout, SSH reachability, lease extension, inventory sync, and checkin.
+
+config:
+  inventory_path: ~/.broker/smoke_at_test_inventory.yaml
+  log_path: smoke_ansibletower_test.log
+  settings:
+    AnsibleTower:
+      dangling_behavior: store
+      workflow_timeout: 3600
+    ssh:
+      host_username: root
+
+variables:
+  RHEL_VER: null
+  NET_TYPE: ipv4
+  EXTEND_TIME: "+606060"  # Extend lease by ~7 days (~168 hours)
+
+steps:
+  # ============================================================================
+  # SECTION 1: Provider Info
+  # ============================================================================
+
+  - name: List all Tower workflows
+    action: provider_info
+    arguments:
+      provider: AnsibleTower
+      query: workflows
+    capture:
+      as: workflow_list
+
+  - name: Get deploy-rhel workflow details
+    action: provider_info
+    arguments:
+      provider: AnsibleTower
+      query:
+        workflow: deploy-rhel
+    capture:
+      as: rhel_workflow_details
+
+  - name: Report provider info results
+    action: output
+    arguments:
+      content: |
+        AnsibleTower provider info:
+          Workflows available: {{ workflow_list | length }}
+          deploy-rhel details: {{ rhel_workflow_details }}
+      destination: stdout
+
+  # ============================================================================
+  # SECTION 2: Checkout
+  # ============================================================================
+
+  - name: Provision a RHEL host
+    action: checkout
+    arguments:
+      workflow: deploy-rhel
+      deploy_network_type: "{{ NET_TYPE }}"
+      deploy_rhel_version: "{{ RHEL_VER or None }}"
+    on_error:
+      - name: Log checkout failure
+        action: output
+        arguments:
+          content: "ERROR: RHEL checkout failed. Verify Tower connectivity and workflow availability."
+          destination: stderr
+      - name: Exit on checkout failure
+        action: exit
+        arguments:
+          return_code: 10
+          message: "RHEL checkout failed - cannot continue smoke test"
+
+  - name: Confirm host provisioned
+    action: output
+    arguments:
+      content: "Provisioned host: {{ scenario_inventory[0].name }}"
+      destination: stdout
+
+  # ============================================================================
+  # SECTION 3: SSH Reachability Check
+  # ============================================================================
+
+  - name: Verify SSH connectivity
+    action: ssh
+    arguments:
+      command: "hostname"
+    with:
+      hosts: "@scenario_inv[0]"
+    capture:
+      as: ssh_check
+
+  - name: Report SSH result
+    action: output
+    arguments:
+      content: "SSH reachability confirmed - hostname: {{ ssh_check.stdout.strip() }}"
+      destination: stdout
+
+  # ============================================================================
+  # SECTION 4: Execute (Extend Lease)
+  # ============================================================================
+
+  - name: Extend lease via Tower workflow
+    action: execute
+    arguments:
+      workflow: extend-vm
+      target_vm: "{{ scenario_inventory[0].name }}"
+      new_expire_time: "{{ EXTEND_TIME }}"
+    capture:
+      as: lease_result
+    exit_on_error: false
+
+  - name: Report lease extension outcome
+    action: output
+    arguments:
+      content: "Lease extension result: {{ lease_result }}"
+      destination: stdout
+    when: lease_result is defined
+
+  - name: Note if lease extension was skipped
+    action: output
+    arguments:
+      content: "Note: Lease extension skipped or failed (non-critical)"
+      destination: stdout
+    when: lease_result is not defined
+
+  # ============================================================================
+  # SECTION 5: Inventory Sync
+  # ============================================================================
+
+  - name: Sync AnsibleTower inventory
+    action: inventory
+    arguments:
+      sync: AnsibleTower
+    capture:
+      as: synced_inventory
+    exit_on_error: false
+
+  - name: Report inventory sync result
+    action: output
+    arguments:
+      content: "Inventory sync found {{ synced_inventory | length }} host(s) in main broker inventory"
+      destination: stdout
+    when: synced_inventory is defined
+
+  - name: Note if inventory sync was skipped
+    action: output
+    arguments:
+      content: "Note: AnsibleTower inventory sync skipped or failed (non-critical)"
+      destination: stdout
+    when: synced_inventory is not defined
+
+  # ============================================================================
+  # SECTION 6: Cleanup
+  # ============================================================================
+
+  - name: Final smoke test summary
+    action: output
+    arguments:
+      content: |
+
+        ====================================
+        ANSIBLETOWER SMOKE TEST COMPLETE
+        ====================================
+        Host tested:  {{ scenario_inventory[0].name }}
+        RHEL version: {{ RHEL_VER or "Tower default" }}
+        Network type: {{ NET_TYPE }}
+        ====================================
+      destination: stdout
+
+  - name: Release RHEL host
+    action: checkin
+    with:
+      hosts: scenario_inventory
+    on_error:
+      - name: Log checkin failure
+        action: output
+        arguments:
+          content: "WARNING: Host release failed. Manual cleanup may be required."
+          destination: stderr
+      - name: Exit with warning
+        action: exit
+        arguments:
+          return_code: 5
+          message: "Smoke test completed but host cleanup failed"
+
+  - name: Confirm host released
+    action: output
+    arguments:
+      content: "Host successfully released. Smoke test passed."
+      destination: stdout
