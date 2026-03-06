@@ -1,0 +1,115 @@
+# Reboot a Locked VM via AnsibleTower
+#
+# Temporarily unlocks a VM, reboots it, then re-locks it. Useful when a VM
+# needs to be rebooted but its lock state would otherwise prevent the operation.
+#
+# Steps:
+#   1. Unlock the VM via the lock-vm workflow
+#   2. Reboot the VM via the vm-power-operation workflow
+#   3. Re-lock the VM via the lock-vm workflow
+#
+# Prerequisites:
+# - Broker configured with a valid AnsibleTower provider in broker_settings.yaml
+# - Access to the lock-vm and vm-power-operation workflows in the configured Tower instance
+#
+# Usage:
+#   broker scenarios execute reboot_locked_vm --SOURCE_VM my-host.example.com
+
+description: Unlock a VM, reboot it, then re-lock it using AnsibleTower workflows.
+
+variables:
+  SOURCE_VM: null
+  TOWER_INVENTORY: osp-rhos01-satellite-infra
+
+steps:
+  - name: Unlock VM
+    action: execute
+    arguments:
+      workflow: lock-vm
+      lock_vm_state: unlock
+      source_vm: "{{ SOURCE_VM }}"
+      artifacts: last
+      tower_inventory: "{{ TOWER_INVENTORY }}"
+    capture:
+      as: unlock_result
+    on_error:
+      - name: Log unlock failure
+        action: output
+        arguments:
+          content: "ERROR: Failed to unlock {{ SOURCE_VM }}. Cannot safely reboot."
+          destination: stderr
+      - name: Exit on unlock failure
+        action: exit
+        arguments:
+          return_code: 1
+          message: "VM unlock failed - aborting reboot"
+
+  - name: Confirm VM unlocked
+    action: output
+    arguments:
+      content: "Unlock result for {{ SOURCE_VM }}: {{ unlock_result }}"
+      destination: stdout
+
+  - name: Reboot VM
+    action: execute
+    arguments:
+      workflow: vm-power-operation
+      source_vm: "{{ SOURCE_VM }}"
+      vm_operation: reboot
+      artifacts: last
+      tower_inventory: "{{ TOWER_INVENTORY }}"
+    capture:
+      as: reboot_result
+    on_error:
+      - name: Log reboot failure
+        action: output
+        arguments:
+          content: "ERROR: Reboot of {{ SOURCE_VM }} failed. Attempting to re-lock."
+          destination: stderr
+      - name: Re-lock VM after failed reboot
+        action: execute
+        arguments:
+          workflow: lock-vm
+          lock_vm_state: lock
+          source_vm: "{{ SOURCE_VM }}"
+          artifacts: last
+          tower_inventory: "{{ TOWER_INVENTORY }}"
+      - name: Exit after reboot failure
+        action: exit
+        arguments:
+          return_code: 2
+          message: "VM reboot failed - VM has been re-locked"
+
+  - name: Confirm VM rebooted
+    action: output
+    arguments:
+      content: "Reboot result for {{ SOURCE_VM }}: {{ reboot_result }}"
+      destination: stdout
+
+  - name: Re-lock VM
+    action: execute
+    arguments:
+      workflow: lock-vm
+      lock_vm_state: lock
+      source_vm: "{{ SOURCE_VM }}"
+      artifacts: last
+      tower_inventory: "{{ TOWER_INVENTORY }}"
+    capture:
+      as: lock_result
+    on_error:
+      - name: Log re-lock failure
+        action: output
+        arguments:
+          content: "WARNING: Failed to re-lock {{ SOURCE_VM }} after reboot. Manual intervention may be required."
+          destination: stderr
+      - name: Exit with warning
+        action: exit
+        arguments:
+          return_code: 3
+          message: "VM was rebooted but could not be re-locked"
+
+  - name: Confirm VM re-locked
+    action: output
+    arguments:
+      content: "Re-lock result for {{ SOURCE_VM }}: {{ lock_result }}"
+      destination: stdout
