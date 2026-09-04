@@ -1,0 +1,63 @@
+_spec_ver: 3
+description: >-
+  Provides guidance for obtaining official cloud images that work out-of-the-box
+  with Broker's --auth flags. Cloud images have cloud-init pre-installed.
+author: "Broker"
+tags: ["libvirt", "guide", "cloud-image"]
+
+steps:
+  - name: "Display cloud image download guidance"
+    action: output
+    arguments:
+      content: |
+        ╔═══════════════════════════════════════════════════════════════════╗
+        ║  RECOMMENDED: Use Official Cloud Images                          ║
+        ╚═══════════════════════════════════════════════════════════════════╝
+
+        Official cloud images come with cloud-init, qemu-guest-agent, and SSH
+        pre-installed and pre-configured. They work immediately with broker's
+        --auth flags without any manual setup or image modification.
+
+        📥 Download Locations (latest stable releases):
+
+        Fedora Cloud Base:
+          https://fedora.osuosl.org/linux/releases/
+          → Navigate to latest version → Cloud/x86_64/images/
+          → Download: Fedora-Cloud-Base-Generic.x86_64-*.qcow2
+
+        Ubuntu Cloud:
+          https://cloud-images.ubuntu.com/releases/
+          → Navigate to desired release (e.g., 24.04, 22.04)
+          → Download: *-server-cloudimg-amd64.img
+
+        CentOS Stream GenericCloud:
+          https://cloud.centos.org/centos/
+          → Navigate to stream version (e.g., 9-stream)
+          → x86_64/images/
+          → Download: CentOS-Stream-GenericCloud-*-latest.x86_64.qcow2
+
+        Rocky Linux GenericCloud:
+          https://download.rockylinux.org/pub/rocky/
+          → Navigate to version → images/x86_64/
+          → Download: Rocky-*-GenericCloud-Base.latest.x86_64.qcow2
+
+        ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+        🔧 After downloading, import the image:
+
+          broker scenarios execute import_image \
+            IMAGE_PATH=/path/to/downloaded.qcow2 \
+            IMAGE_NAME=my-cloud-image.qcow2
+
+        ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+        💡 Then use immediately with --auth:
+
+          broker checkout --libvirt-image my-cloud-image.qcow2 --auth basic
+
+        ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+        ℹ️  For existing non-cloud images, use:
+          broker scenarios execute prepare_regular_image IMAGE_NAME=<image>
+
+      destination: stdout

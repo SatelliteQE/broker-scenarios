@@ -1,22 +1,24 @@
-description: Deploy all available container hosts then immediately check them in.
+_spec_ver: 3
+description: Deploy all available container hosts then immediately check them
+  in.
 config:
   log_path: deploy_containers.log
 steps:
-  - name: Discover container hosts
-    action: provider_info
-    arguments:
-      provider: Container
-      query: container_hosts
-    capture:
-      as: container_hosts
-  - name: Deploy each container host
-    action: checkout
-    arguments:
-      container_host: "{{ c_host }}"
-    loop:
-      iterable: container_hosts
-      iter_var: c_host
-  - name: Checkin all deployed containers
-    action: checkin
-    with:
-      hosts: scenario_inventory
+- name: Discover container hosts
+  action: provider_info
+  arguments:
+    provider: Container
+    query: container_hosts
+  capture:
+    as: container_hosts
+- name: Deploy each container host
+  action: checkout
+  arguments:
+    container_host: '{{ c_host }}'
+  loop:
+    iterable: container_hosts
+    iter_var: c_host
+- name: Checkin all deployed containers
+  action: checkin
+  with:
+    hosts: scenario_inventory

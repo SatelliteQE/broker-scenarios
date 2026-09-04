@@ -22,6 +22,12 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v4
 
+      - name: Install base broker
+        run: uv tool install broker
+
+      - name: Perform migrations
+        run: bash scripts/migrate_all_scenarios.sh
+
       - name: Regenerate metadata.yaml
         run: uv run scripts/generate_metadata.py
 

@@ -1,0 +1,195 @@
+_spec_ver: 3
+description: >-
+  Prepare a regular (non-cloud) image for broker use by installing cloud-init
+  WITHOUT requiring sudo for the main work. Uses LIBGUESTFS_BACKEND=direct to
+  run virt-customize as a regular user. The image is copied to ~/libvirt-working/
+  for modification, then use the copy_image_to_pool helper (with sudo) to move it back.
+author: "Broker"
+tags: ["libvirt", "setup", "virt-customize"]
+
+variables:
+  IMAGE_NAME: ""  # Required: name of image to prepare
+  STORAGE_POOL: ""  # Optional: auto-detects if not provided
+
+steps:
+  - name: "Validate IMAGE_NAME was provided"
+    action: assert
+    arguments:
+      that: "{{ IMAGE_NAME != '' }}"
+      fail_msg: "IMAGE_NAME is required. Usage: broker scenarios execute prepare_regular_image IMAGE_NAME=fed44.qcow2"
+
+  - name: "Auto-detect storage pool"
+    action: local_exec
+    arguments:
+      command: |
+        REQUESTED="{{ STORAGE_POOL }}"
+        POOLS=$(virsh pool-list --name | grep -v '^$')
+
+        if [ -z "$POOLS" ]; then
+          echo "ERROR: No active storage pools found" >&2
+          exit 1
+        fi
+
+        if [ -n "$REQUESTED" ]; then
+          if echo "$POOLS" | grep -q "^${REQUESTED}$"; then
+            echo "$REQUESTED"
+          else
+            echo "ERROR: Pool '$REQUESTED' not found" >&2
+            exit 1
+          fi
+        elif echo "$POOLS" | grep -q "^default$"; then
+          echo "default"
+        else
+          echo "$POOLS" | head -1
+        fi
+    capture:
+      as: pool_result
+
+  - name: "Get pool path"
+    action: local_exec
+    arguments:
+      command: "virsh pool-dumpxml {{ pool_result.stdout.strip() }} | grep -oP '(?<=<path>)[^<]+'"
+    capture:
+      as: pool_path_result
+
+  - name: "Check if virt-customize is available"
+    action: local_exec
+    arguments:
+      command: "which virt-customize"
+    capture:
+      as: virt_check
+    on_error: continue
+
+  - name: "Assert virt-customize is installed"
+    action: assert
+    arguments:
+      that: "{{ virt_check.status == 0 }}"
+      fail_msg: |
+        virt-customize not found. Install libguestfs-tools:
+          Fedora/RHEL: sudo dnf install libguestfs-tools-c
+          Ubuntu/Debian: sudo apt-get install libguestfs-tools
+
+  - name: "Check KVM access for user-space libguestfs"
+    action: local_exec
+    arguments:
+      command: "test -w /dev/kvm && echo 'OK' || echo 'FAIL'"
+    capture:
+      as: kvm_check
+    on_error: continue
+
+  - name: "Warn if KVM access is missing"
+    when: "{{ 'FAIL' in kvm_check.stdout }}"
+    action: output
+    arguments:
+      content: |
+        ⚠️  Warning: /dev/kvm is not writable by your user.
+        You may need to add yourself to the 'kvm' group:
+          sudo usermod -aG kvm $USER
+          newgrp kvm  # or log out and back in
+
+        Continuing anyway (may work with LIBGUESTFS_BACKEND=direct)...
+      destination: stderr
+
+  - name: "Create working directory"
+    action: local_exec
+    arguments:
+      command: "mkdir -p $HOME/libvirt-working"
+
+  - name: "Copy image to user-writable location"
+    action: local_exec
+    arguments:
+      command: |
+        POOL_PATH="{{ pool_path_result.stdout.strip() }}"
+
+        if [ -f "$HOME/libvirt-working/{{ IMAGE_NAME }}" ]; then
+          echo "Image already in working directory"
+        else
+          # Try direct copy first (if user has read access)
+          cp "$POOL_PATH/{{ IMAGE_NAME }}" "$HOME/libvirt-working/{{ IMAGE_NAME }}" 2>/dev/null || \
+          # Fallback: provide instructions for sudo copy
+          {
+            echo "Cannot read $POOL_PATH/{{ IMAGE_NAME }} directly."
+            echo "Please run: sudo cp $POOL_PATH/{{ IMAGE_NAME }} \$HOME/libvirt-working/{{ IMAGE_NAME }}"
+            echo "           sudo chown \$USER:\$USER \$HOME/libvirt-working/{{ IMAGE_NAME }}"
+            exit 1
+          }
+        fi
+      timeout: 300
+    capture:
+      as: copy
+    on_error: continue
+
+  - name: "Check if manual copy is needed"
+    when: "{{ copy.status != 0 }}"
+    action: output
+    arguments:
+      content: |
+        📋 Manual Step Required:
+
+        Run these commands to copy the image to your working directory:
+          sudo cp {{ pool_path_result.stdout.strip() }}/{{ IMAGE_NAME }} $HOME/libvirt-working/{{ IMAGE_NAME }}
+          sudo chown $USER:$USER $HOME/libvirt-working/{{ IMAGE_NAME }}
+
+        Then re-run this scenario.
+      destination: stdout
+
+  - name: "Exit if manual copy needed"
+    when: "{{ copy.status != 0 }}"
+    action: exit
+    arguments:
+      return_code: 2
+      message: "Manual image copy required (see instructions above)"
+
+  - name: "Install cloud-init using virt-customize (user-space)"
+    action: local_exec
+    arguments:
+      command: |
+        export LIBGUESTFS_BACKEND=direct
+        virt-customize -a "$HOME/libvirt-working/{{ IMAGE_NAME }}" \
+          --install cloud-init,qemu-guest-agent \
+          --run-command 'systemctl enable cloud-init cloud-config cloud-final cloud-init-local 2>/dev/null || true' \
+          --run-command 'systemctl enable qemu-guest-agent 2>/dev/null || true' \
+          --run-command 'systemctl enable sshd 2>/dev/null || systemctl enable ssh 2>/dev/null || true' \
+          --selinux-relabel
+      timeout: 900
+      stream: true
+    capture:
+      as: customize
+    on_error: continue
+
+  - name: "Assert customization succeeded"
+    action: assert
+    arguments:
+      that: "{{ customize.status == 0 }}"
+      fail_msg: |
+        virt-customize failed (status={{ customize.status }}):
+        {{ customize.stderr }}
+
+        Troubleshooting:
+        1. Ensure you're in the kvm group: groups | grep kvm
+        2. Try with sudo if user-space mode fails:
+           sudo virt-customize -a $HOME/libvirt-working/{{ IMAGE_NAME }} \
+             --install cloud-init,qemu-guest-agent \
+             --run-command 'systemctl enable cloud-init cloud-config cloud-final cloud-init-local' \
+             --selinux-relabel
+
+  - name: "Provide instructions to move image back to pool"
+    action: output
+    arguments:
+      content: |
+        ✅ Image customization complete!
+
+        The prepared image is at: $HOME/libvirt-working/{{ IMAGE_NAME }}
+
+        📋 Next Step - Copy image back to pool (REQUIRES SUDO):
+
+        Run this helper scenario with sudo:
+          sudo broker scenarios execute copy_image_to_pool \
+            IMAGE_NAME={{ IMAGE_NAME }} \
+            SOURCE_PATH=\$HOME/libvirt-working/{{ IMAGE_NAME }} \
+            STORAGE_POOL={{ pool_result.stdout.strip() }}
+
+        After that completes, you can use the image:
+          broker checkout --libvirt-image {{ IMAGE_NAME }} --auth basic
+
+      destination: stdout

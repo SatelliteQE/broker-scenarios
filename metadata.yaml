@@ -15,7 +15,7 @@ scenarios:
   categories:
   - ansibletower
   - maintenance
-  description: Unlock a VM, reboot it, then re-lock it using AnsibleTower 
+  description: Unlock a VM, reboot it, then re-lock it using AnsibleTower
     workflows.
 - path: ansibletower/sync_checkin_all.yaml
   name: sync_checkin_all
@@ -27,39 +27,39 @@ scenarios:
   categories:
   - ansibletower
   - testing
-  description: Comprehensive test of AnsibleTower provider functionality with 
-    multiple RHEL hosts, workflow queries, SSH commands, lease extension, and 
+  description: Comprehensive test of AnsibleTower provider functionality with
+    multiple RHEL hosts, workflow queries, SSH commands, lease extension, and
     inventory operations.
 - path: ansibletower/testing/smoke_ansibletower_test.yaml
   name: smoke_ansibletower_test
   categories:
   - ansibletower
   - testing
-  description: Smoke test for the AnsibleTower provider covering provider_info, 
+  description: Smoke test for the AnsibleTower provider covering provider_info,
     checkout, SSH reachability, lease extension, inventory sync, and checkin.
 - path: container/testing/comprehensive_container_test.yaml
   name: comprehensive_container_test
   categories:
   - container
   - testing
-  description: Comprehensive test of Container provider functionality with 
+  description: Comprehensive test of Container provider functionality with
     multiple hosts, commands, and file operations.
 - path: examples/deploy_checkin_containers.yaml
   name: deploy_checkin_containers
   categories:
   - examples
-  description: Deploy all available container hosts then immediately check them 
+  description: Deploy all available container hosts then immediately check them
     in.
 - path: examples/deploy_details.yaml
   name: deploy_details
   categories:
   - examples
-  description: Retrieve details of AnsibleTower workflows related to deployment 
+  description: Retrieve details of AnsibleTower workflows related to deployment
     and output to a file.
 - path: examples/test.yaml
   name: test
   categories:
   - examples
-  description: A simple scenario demonstrating basic checkout, ssh command 
+  description: A simple scenario demonstrating basic checkout, ssh command
     execution, and checkin flow with error handling and result output.
 schema_version: 1

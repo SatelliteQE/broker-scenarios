@@ -1,0 +1,54 @@
+_spec_ver: 3
+description: >-
+  Detect capabilities of a libvirt base image (cloud-init, SSH, guest-agent).
+  Uses virt-inspector to probe the image without booting it.
+author: "Broker"
+tags: ["libvirt", "detection", "image"]
+
+variables:
+  IMAGE_NAME: ""  # Required: name of image in storage pool to inspect
+
+steps:
+  - name: "Validate IMAGE_NAME was provided"
+    action: assert
+    arguments:
+      that: "{{ IMAGE_NAME != '' }}"
+      fail_msg: "IMAGE_NAME is required. Usage: broker scenarios execute detect_vm_capabilities IMAGE_NAME=fed44.qcow2"
+
+  - name: "Detect image capabilities using virt-inspector"
+    action: execute
+    arguments:
+      libvirt_image_name: "{{ IMAGE_NAME }}"
+    capture:
+      as: capabilities
+    on_error: continue
+
+  - name: "Assert detection succeeded"
+    action: assert
+    arguments:
+      that: "{{ capabilities is defined and capabilities.image_type is defined }}"
+      fail_msg: "Image capability detection failed. Ensure virt-inspector is installed (libguestfs-tools package)."
+
+  - name: "Display detection results"
+    action: output
+    arguments:
+      content: |
+        Image Capabilities for '{{ IMAGE_NAME }}':
+          Image Type: {{ capabilities.image_type }}
+          Has cloud-init: {{ capabilities.has_cloud_init }}
+          Has SSH server: {{ capabilities.has_sshd }}
+          Has QEMU guest agent: {{ capabilities.has_guest_agent }}
+
+        Recommended Setup:
+          {% if capabilities.image_type == 'cloud' %}
+          ✅ This is a cloud image - ready to use with --auth flags!
+          No additional setup needed. Cloud-init will configure SSH automatically.
+          {% elif capabilities.image_type == 'server' %}
+          ⚠️  This server image needs cloud-init installed for --auth support.
+          Run: broker scenarios execute prepare_regular_image IMAGE_NAME={{ IMAGE_NAME }}
+          {% else %}
+          ❌ This minimal image needs preparation for broker use.
+          Recommend downloading an official cloud image instead.
+          Run: broker scenarios execute cloud_image_guide
+          {% endif %}
+      destination: stdout

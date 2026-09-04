@@ -1,0 +1,230 @@
+_spec_ver: 3
+description: >-
+  Create and configure the default NAT network for libvirt to enable internet
+  connectivity for VMs. Creates the network if missing, enables IP forwarding,
+  and validates the configuration.
+
+  REQUIRES SUDO - This scenario creates networks and modifies sysctl settings.
+author: "Broker"
+tags: ["libvirt", "network", "setup", "nat"]
+requires_sudo: true
+
+variables:
+  NETWORK_NAME: "default"
+  BRIDGE_NAME: "virbr0"
+  NETWORK_ADDR: "192.168.122.1"
+  NETWORK_MASK: "255.255.255.0"
+  DHCP_START: "192.168.122.2"
+  DHCP_END: "192.168.122.254"
+
+  NETWORK_XML: |
+    <network>
+      <name>{{ NETWORK_NAME }}</name>
+      <forward mode='nat'/>
+      <bridge name='{{ BRIDGE_NAME }}' stp='on' delay='0'/>
+      <ip address='{{ NETWORK_ADDR }}' netmask='{{ NETWORK_MASK }}'>
+        <dhcp>
+          <range start='{{ DHCP_START }}' end='{{ DHCP_END }}'/>
+        </dhcp>
+      </ip>
+    </network>
+
+steps:
+  - name: "Check if network already exists"
+    action: local_exec
+    arguments:
+      command: "virsh -c qemu:///system net-info {{ NETWORK_NAME }}"
+    capture:
+      as: net_exists
+    on_error: continue
+
+  - name: "Skip creation if network exists"
+    when: "{{ net_exists.status == 0 }}"
+    action: output
+    arguments:
+      content: "Network '{{ NETWORK_NAME }}' already exists, will ensure it's started."
+      destination: stdout
+
+  - name: "Create network XML file"
+    when: "{{ net_exists.status != 0 }}"
+    action: local_exec
+    arguments:
+      command: |
+        cat > /tmp/libvirt-network-{{ NETWORK_NAME }}.xml <<'NETXML'
+        {{ NETWORK_XML }}
+        NETXML
+        echo "Created /tmp/libvirt-network-{{ NETWORK_NAME }}.xml"
+
+  - name: "Define network in libvirt"
+    when: "{{ net_exists.status != 0 }}"
+    action: local_exec
+    arguments:
+      command: "virsh -c qemu:///system net-define /tmp/libvirt-network-{{ NETWORK_NAME }}.xml"
+    capture:
+      as: net_define
+
+  - name: "Assert network definition succeeded"
+    when: "{{ net_exists.status != 0 }}"
+    action: assert
+    arguments:
+      that: "{{ net_define.status == 0 }}"
+      fail_msg: "Failed to define network: {{ net_define.stderr }}"
+
+  - name: "Clean up temp XML file"
+    when: "{{ net_exists.status != 0 }}"
+    action: local_exec
+    arguments:
+      command: "rm -f /tmp/libvirt-network-{{ NETWORK_NAME }}.xml"
+    on_error: continue
+
+  - name: "Check current IP forwarding status"
+    action: local_exec
+    arguments:
+      command: "sysctl -n net.ipv4.ip_forward 2>/dev/null || echo 0"
+    capture:
+      as: ip_forward_check
+
+  - name: "Enable IP forwarding (persist across reboots)"
+    when: "{{ ip_forward_check.stdout.strip() != '1' }}"
+    action: local_exec
+    arguments:
+      command: |
+        echo "Enabling IP forwarding for NAT..."
+        echo "net.ipv4.ip_forward=1" | tee /etc/sysctl.d/99-libvirt.conf
+        sysctl -p /etc/sysctl.d/99-libvirt.conf
+    capture:
+      as: ip_forward_enable
+
+  - name: "Skip IP forwarding if already enabled"
+    when: "{{ ip_forward_check.stdout.strip() == '1' }}"
+    action: output
+    arguments:
+      content: "IP forwarding already enabled (net.ipv4.ip_forward=1)"
+      destination: stdout
+
+  - name: "Start network"
+    action: local_exec
+    arguments:
+      command: "virsh -c qemu:///system net-start {{ NETWORK_NAME }} 2>&1 || echo 'Network already started'"
+    capture:
+      as: net_start
+
+  - name: "Set network to autostart"
+    action: local_exec
+    arguments:
+      command: "virsh -c qemu:///system net-autostart {{ NETWORK_NAME }}"
+    capture:
+      as: net_autostart
+
+  - name: "Verify network is active"
+    action: local_exec
+    arguments:
+      command: "virsh -c qemu:///system net-info {{ NETWORK_NAME }} | grep 'Active:' | grep -q yes"
+    capture:
+      as: net_active_check
+    retry:
+      count: 3
+      delay: "2s"
+
+  - name: "Assert network is active"
+    action: assert
+    arguments:
+      that: "{{ net_active_check.status == 0 }}"
+      fail_msg: "Network '{{ NETWORK_NAME }}' exists but failed to start. Check 'virsh -c qemu:///system net-info {{ NETWORK_NAME }}' for details."
+
+  - name: "Get network status"
+    action: local_exec
+    arguments:
+      command: "virsh -c qemu:///system net-info {{ NETWORK_NAME }}"
+    capture:
+      as: net_info
+
+  - name: "Check bridge interface"
+    action: local_exec
+    arguments:
+      command: "ip link show {{ BRIDGE_NAME }}"
+    capture:
+      as: bridge_check
+    on_error: continue
+
+  - name: "Check if firewalld is running"
+    action: local_exec
+    arguments:
+      command: "systemctl is-active firewalld"
+    capture:
+      as: firewalld_check
+    on_error: continue
+
+  - name: "Configure firewalld for libvirt NAT"
+    when: "{{ firewalld_check.status == 0 }}"
+    action: local_exec
+    arguments:
+      command: |
+        echo "Configuring firewalld for libvirt NAT..."
+
+        # Ensure libvirt zone exists
+        firewall-cmd --permanent --new-zone=libvirt 2>/dev/null || true
+
+        # Add bridge to libvirt zone
+        firewall-cmd --permanent --zone=libvirt --add-interface={{ BRIDGE_NAME }} 2>/dev/null || true
+
+        # Check if masquerade is already enabled
+        if ! firewall-cmd --zone=libvirt --query-masquerade >/dev/null 2>&1; then
+          echo "  Enabling masquerade (NAT) in libvirt zone..."
+          firewall-cmd --permanent --zone=libvirt --add-masquerade
+          firewall-cmd --reload
+          echo "  Masquerade enabled"
+        else
+          echo "  Masquerade already enabled"
+        fi
+    capture:
+      as: firewalld_config
+
+  - name: "Restart network to apply firewall rules"
+    when: "{{ firewalld_check.status == 0 and 'Enabling masquerade' in firewalld_config.stdout }}"
+    action: local_exec
+    arguments:
+      command: |
+        echo "Restarting network to apply firewall rules..."
+        virsh -c qemu:///system net-destroy {{ NETWORK_NAME }} 2>/dev/null || true
+        sleep 1
+        virsh -c qemu:///system net-start {{ NETWORK_NAME }}
+        echo "Network restarted"
+    capture:
+      as: net_restart
+
+  - name: "Success message"
+    action: output
+    arguments:
+      content: |
+        ✅ Network setup complete!
+
+        Network: {{ NETWORK_NAME }}
+        Bridge: {{ BRIDGE_NAME }}
+        Subnet: {{ NETWORK_ADDR }}/{{ NETWORK_MASK }}
+        DHCP Range: {{ DHCP_START }} - {{ DHCP_END }}
+        IP Forwarding: enabled
+        Autostart: yes
+        {% if firewalld_check.status == 0 %}
+        Firewalld: configured (masquerade enabled)
+        {% endif %}
+
+        {{ net_info.stdout }}
+
+        {% if bridge_check.status == 0 %}
+        Bridge interface '{{ BRIDGE_NAME }}' is active.
+        {% else %}
+        ⚠️  Bridge interface not yet created (will be created when first VM starts)
+        {% endif %}
+
+        Next steps:
+        1. Validate network configuration:
+           broker scenarios execute validate_network
+
+        2. Checkout a VM with internet access:
+           broker checkout --libvirt-image <image-name> --auth basic
+
+        3. Test connectivity from inside the VM:
+           ping -c 3 8.8.8.8
+           curl -I https://www.google.com
+      destination: stdout

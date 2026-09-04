@@ -1,0 +1,302 @@
+_spec_ver: 3
+description: >-
+  Comprehensive network troubleshooting for libvirt VMs with no internet access.
+  Provides step-by-step diagnostics and fix suggestions.
+author: "Broker"
+tags: ["libvirt", "network", "troubleshoot", "diagnostic"]
+
+variables:
+  NETWORK_NAME: "default"
+  BRIDGE_NAME: "virbr0"
+
+steps:
+  - name: "Display troubleshooting header"
+    action: output
+    arguments:
+      content: |
+        ═══════════════════════════════════════════════════════════════
+        Libvirt Network Troubleshooting
+        ═══════════════════════════════════════════════════════════════
+
+        Diagnosing network connectivity issues for VMs...
+
+      destination: stdout
+
+  - name: "Step 1: Check network status"
+    action: local_exec
+    arguments:
+      command: |
+        echo "STEP 1: Network Status"
+        echo "─────────────────────────"
+        echo ""
+        echo "All networks:"
+        virsh -c qemu:///systemnet-list --all
+        echo ""
+
+        if virsh -c qemu:///systemnet-info {{ NETWORK_NAME }} >/dev/null 2>&1; then
+          echo "Network '{{ NETWORK_NAME }}' details:"
+          virsh -c qemu:///systemnet-info {{ NETWORK_NAME }}
+          echo ""
+          echo "✅ Network exists"
+
+          if virsh -c qemu:///systemnet-info {{ NETWORK_NAME }} | grep -q "Active:.*yes"; then
+            echo "✅ Network is active"
+          else
+            echo "❌ Network is INACTIVE"
+            echo "   Fix: sudo virsh -c qemu:///systemnet-start {{ NETWORK_NAME }}"
+          fi
+        else
+          echo "❌ Network '{{ NETWORK_NAME }}' not found"
+          echo "   Fix: sudo -E env PATH=$PATH broker scenarios execute setup_network"
+        fi
+    capture:
+      as: step1
+
+  - name: "Step 2: Check IP forwarding"
+    action: local_exec
+    arguments:
+      command: |
+        echo ""
+        echo "STEP 2: IP Forwarding"
+        echo "─────────────────────────"
+        echo ""
+
+        FORWARD=$(sysctl -n net.ipv4.ip_forward 2>/dev/null)
+        echo "net.ipv4.ip_forward = $FORWARD"
+        echo ""
+
+        if [ "$FORWARD" = "1" ]; then
+          echo "✅ IP forwarding is enabled"
+        else
+          echo "❌ IP forwarding is DISABLED"
+          echo "   NAT will not work without IP forwarding!"
+          echo ""
+          echo "   Fix: sudo -E env PATH=$PATH broker scenarios execute setup_network"
+          echo "   Or manually:"
+          echo "     echo 'net.ipv4.ip_forward=1' | sudo tee /etc/sysctl.d/99-libvirt.conf"
+          echo "     sudo sysctl -p /etc/sysctl.d/99-libvirt.conf"
+        fi
+
+        # Check if setting persists across reboots
+        if [ -f /etc/sysctl.d/99-libvirt.conf ]; then
+          echo "✅ IP forwarding persists across reboots (/etc/sysctl.d/99-libvirt.conf exists)"
+        else
+          echo "⚠️  IP forwarding may not persist after reboot"
+          echo "   Setting should be in /etc/sysctl.d/99-libvirt.conf"
+        fi
+    capture:
+      as: step2
+
+  - name: "Step 3: Check bridge interface"
+    action: local_exec
+    arguments:
+      command: |
+        echo ""
+        echo "STEP 3: Bridge Interface"
+        echo "─────────────────────────"
+        echo ""
+
+        if ip link show {{ BRIDGE_NAME }} >/dev/null 2>&1; then
+          echo "✅ Bridge interface '{{ BRIDGE_NAME }}' exists"
+          echo ""
+          ip addr show {{ BRIDGE_NAME }}
+          echo ""
+
+          # Check if bridge is UP
+          if ip link show {{ BRIDGE_NAME }} | grep -q "state UP"; then
+            echo "✅ Bridge is UP"
+          else
+            echo "⚠️  Bridge is DOWN"
+          fi
+        else
+          echo "⚠️  Bridge interface '{{ BRIDGE_NAME }}' not found"
+          echo "   This is normal if:"
+          echo "   - No VMs are currently running"
+          echo "   - Network was just created"
+          echo ""
+          echo "   Bridge is created automatically when first VM starts."
+        fi
+    capture:
+      as: step3
+    on_error: continue
+
+  - name: "Step 4: Check firewall/NAT rules"
+    action: local_exec
+    arguments:
+      command: |
+        echo ""
+        echo "STEP 4: Firewall/NAT Rules"
+        echo "─────────────────────────"
+        echo ""
+
+        if command -v iptables >/dev/null 2>&1; then
+          echo "Using iptables..."
+          echo ""
+
+          # Check FORWARD chain
+          echo "FORWARD chain (should allow {{ BRIDGE_NAME }}):"
+          iptables -L FORWARD -n -v 2>/dev/null | grep -E "Chain|{{ BRIDGE_NAME }}" | head -10
+          echo ""
+
+          # Check NAT table
+          echo "NAT table (POSTROUTING for masquerading):"
+          iptables -t nat -L POSTROUTING -n -v 2>/dev/null | grep -E "Chain|{{ BRIDGE_NAME }}|MASQUERADE" | head -10
+          echo ""
+
+          if iptables -t nat -L -n 2>/dev/null | grep -q "{{ BRIDGE_NAME }}"; then
+            echo "✅ NAT rules present for {{ BRIDGE_NAME }}"
+          else
+            echo "⚠️  No NAT rules found"
+            echo "   This may be normal if no VMs are running."
+            echo "   Libvirt creates iptables rules automatically when VMs start."
+          fi
+        elif command -v nft >/dev/null 2>&1; then
+          echo "Using nftables..."
+          echo ""
+          nft list tables 2>/dev/null
+          echo ""
+          echo "ℹ️  Libvirt should create nftables rules automatically"
+        else
+          echo "⚠️  No firewall tool found (iptables/nftables)"
+        fi
+    capture:
+      as: step4
+    on_error: continue
+
+  - name: "Step 5: Check DNS configuration"
+    action: local_exec
+    arguments:
+      command: |
+        echo ""
+        echo "STEP 5: DNS Configuration"
+        echo "─────────────────────────"
+        echo ""
+
+        if virsh -c qemu:///systemnet-dumpxml {{ NETWORK_NAME }} >/dev/null 2>&1; then
+          XML=$(virsh -c qemu:///systemnet-dumpxml {{ NETWORK_NAME }})
+
+          # Check for DHCP
+          if echo "$XML" | grep -q "<dhcp>"; then
+            echo "✅ DHCP is configured in network"
+            echo ""
+
+            # Extract DHCP range
+            RANGE_START=$(echo "$XML" | grep -oP "(?<=range start=')[^']+")
+            RANGE_END=$(echo "$XML" | grep -oP "(?<=range end=')[^']+")
+            if [ -n "$RANGE_START" ]; then
+              echo "   DHCP range: $RANGE_START - $RANGE_END"
+            fi
+
+            # Check for custom DNS
+            if echo "$XML" | grep -q "<dns>"; then
+              echo "   Custom DNS configured"
+            else
+              echo "   Using default DNS (host's resolv.conf)"
+            fi
+          else
+            echo "❌ No DHCP configured"
+            echo "   VMs will not receive IP addresses automatically"
+            echo "   Fix: sudo -E env PATH=$PATH broker scenarios execute setup_network"
+          fi
+        fi
+    capture:
+      as: step5
+    on_error: continue
+
+  - name: "Step 6: Check running VMs"
+    action: local_exec
+    arguments:
+      command: |
+        echo ""
+        echo "STEP 6: Running VMs"
+        echo "─────────────────────────"
+        echo ""
+
+        VMS=$(virsh -c qemu:///systemlist --name 2>/dev/null | grep -v '^$' || echo "")
+        if [ -z "$VMS" ]; then
+          echo "ℹ️  No VMs currently running"
+          echo "   Some network components (bridge, firewall rules) are only created when VMs start."
+        else
+          echo "Running VMs:"
+          virsh -c qemu:///systemlist
+          echo ""
+
+          # For each VM, check network interfaces
+          for vm in $VMS; do
+            echo "VM: $vm"
+            echo "  Interfaces:"
+            virsh -c qemu:///systemdomiflist "$vm" 2>/dev/null | tail -n +3 | head -5
+          done
+        fi
+    capture:
+      as: step6
+    on_error: continue
+
+  - name: "Display comprehensive summary"
+    action: output
+    arguments:
+      content: |
+        ═══════════════════════════════════════════════════════════════
+        Troubleshooting Results
+        ═══════════════════════════════════════════════════════════════
+
+        {{ step1.stdout }}
+
+        {{ step2.stdout }}
+
+        {{ step3.stdout }}
+
+        {{ step4.stdout }}
+
+        {{ step5.stdout }}
+
+        {{ step6.stdout }}
+
+        ═══════════════════════════════════════════════════════════════
+        RECOMMENDED ACTIONS
+        ═══════════════════════════════════════════════════════════════
+
+        {% if "Network is active" not in step1.stdout %}
+        1. ❌ Network is not active
+           Fix: sudo virsh -c qemu:///systemnet-start {{ NETWORK_NAME }}
+                sudo virsh -c qemu:///systemnet-autostart {{ NETWORK_NAME }}
+
+        {% endif %}
+        {% if "IP forwarding is enabled" not in step2.stdout %}
+        2. ❌ IP forwarding is disabled
+           Fix: echo 'net.ipv4.ip_forward=1' | sudo tee /etc/sysctl.d/99-libvirt.conf
+                sudo sysctl -p /etc/sysctl.d/99-libvirt.conf
+
+        {% endif %}
+        {% if "not found" in step1.stdout %}
+        3. ❌ Network does not exist
+           Fix: sudo -E env PATH=$PATH broker scenarios execute setup_network
+
+        {% endif %}
+        {% if "Network is active" in step1.stdout and "IP forwarding is enabled" in step2.stdout %}
+        ✅ Core network configuration looks good!
+
+        If VMs still don't have internet access:
+        1. Check inside VM: ip addr (does it have an IP?)
+        2. Check inside VM: ping 192.168.122.1 (can it reach gateway?)
+        3. Check inside VM: ping 8.8.8.8 (can it reach internet?)
+        4. Check DNS: ping google.com (does DNS work?)
+
+        If VM has no IP:
+        - Ensure qemu-guest-agent is installed in the image
+        - Check DHCP: sudo journalctl -u libvirtd | grep -i dhcp
+
+        If VM can't reach gateway:
+        - Check VM's network interface: ip link (is it UP?)
+        - Restart network in VM: systemctl restart NetworkManager
+
+        If VM can reach 8.8.8.8 but not google.com:
+        - DNS issue. Check /etc/resolv.conf in VM
+        {% endif %}
+
+        ═══════════════════════════════════════════════════════════════
+
+        For more information:
+          virsh -c qemu:///systemnet-dumpxml {{ NETWORK_NAME }}
+          sudo journalctl -u libvirtd | tail -50
+      destination: stdout

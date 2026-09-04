@@ -1,0 +1,50 @@
+_spec_ver: 3
+description: >-
+  Validates that a cloud image is ready for broker use. Cloud images already have
+  cloud-init installed, so no modification is needed.
+author: "Broker"
+tags: ["libvirt", "cloud", "validation"]
+
+variables:
+  IMAGE_NAME: ""  # Required: name of cloud image to validate
+
+steps:
+  - name: "Validate IMAGE_NAME was provided"
+    action: assert
+    arguments:
+      that: "{{ IMAGE_NAME != '' }}"
+      fail_msg: "IMAGE_NAME is required. Usage: broker scenarios execute validate_cloud_image IMAGE_NAME=fedora-cloud.qcow2"
+
+  - name: "Verify cloud-init is present"
+    action: execute
+    arguments:
+      libvirt_image_name: "{{ IMAGE_NAME }}"
+    capture:
+      as: caps
+    on_error: continue
+
+  - name: "Assert image has cloud-init"
+    action: assert
+    arguments:
+      that: "{{ caps.has_cloud_init == true }}"
+      fail_msg: |
+        Image '{{ IMAGE_NAME }}' does not have cloud-init installed.
+        This is not a cloud image. Use prepare_regular_image or download
+        an official cloud image (see: broker scenarios execute cloud_image_guide).
+
+  - name: "Cloud image validation successful"
+    action: output
+    arguments:
+      content: |
+        ✅ Cloud Image Ready: {{ IMAGE_NAME }}
+
+        This image has cloud-init installed and is ready to use with broker's
+        --auth flags. No additional setup needed!
+
+        Usage:
+          broker checkout --libvirt-image {{ IMAGE_NAME }} --auth basic
+          broker checkout --libvirt-image {{ IMAGE_NAME }} --auth key
+          broker checkout --libvirt-image {{ IMAGE_NAME }} --auth root:mypassword
+
+        Cloud-init will automatically configure SSH credentials on first boot.
+      destination: stdout

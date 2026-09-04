@@ -1,0 +1,468 @@
+_spec_ver: 3
+description: >-
+  End-to-end smoke test for the Libvirt provider covering checkout, SSH connectivity,
+  command execution, hypervisor actions (pause/resume/reboot), inventory queries,
+  provider_info, and checkin with cleanup verification.
+
+  This test uses --auth basic to inject broker's default SSH credentials at checkout time,
+  so no pre-customization of the base image is required. The password is set via guest
+  agent and sshd is configured to allow root password login.
+
+  PREREQUISITES:
+    1. Ensure broker_settings.yaml has ssh.host_password set (e.g., "dog8code")
+    2. Base image should have qemu-guest-agent installed and running (most cloud images do)
+author: "Broker"
+tags: ["libvirt", "testing", "smoke", "e2e"]
+
+# Override on the CLI to test against different images or settings:
+#   broker scenarios execute smoke_libvirt_test --vars BASE_IMAGE=rhel9.qcow2
+variables:
+  BASE_IMAGE: "fed44.qcow2"
+  MEMORY_MB: 2048
+  CPUS: 2
+  TEST_STRING: "broker_libvirt_e2e_test_marker"
+  # Expected network for the test environment
+  EXPECTED_NETWORK: "default"
+  EXPECTED_POOL: "default"
+
+steps:
+  # ============================================================================
+  # SECTION 1: Provider Info
+  # ============================================================================
+
+  - name: "Query available base images"
+    action: provider_info
+    arguments:
+      provider: Libvirt
+      query: images
+    capture:
+      as: images
+    on_error: continue
+
+  - name: "Assert base image list is not empty"
+    action: assert
+    arguments:
+      that: "{{ images is defined and images | length > 0 }}"
+      fail_msg: "No base images found in the storage pool. Run scenario_libvirt_setup_local.yaml first."
+
+  - name: "Assert test image is available"
+    action: assert
+    arguments:
+      that: "{{ BASE_IMAGE in images }}"
+      fail_msg: "Test image '{{ BASE_IMAGE }}' not found. Available: {{ images }}"
+
+  - name: "Query available networks"
+    action: provider_info
+    arguments:
+      provider: Libvirt
+      query: networks
+    capture:
+      as: networks
+    on_error: continue
+
+  - name: "Assert expected network exists"
+    action: assert
+    arguments:
+      that: "{{ EXPECTED_NETWORK in networks }}"
+      fail_msg: "Expected network '{{ EXPECTED_NETWORK }}' not found. Available: {{ networks }}"
+
+  - name: "Query available storage pools"
+    action: provider_info
+    arguments:
+      provider: Libvirt
+      query: pools
+    capture:
+      as: pools
+    on_error: continue
+
+  - name: "Assert expected pool exists"
+    action: assert
+    arguments:
+      that: "{{ EXPECTED_POOL in pools }}"
+      fail_msg: "Expected pool '{{ EXPECTED_POOL }}' not found. Available: {{ pools }}"
+
+  - name: "Report provider info summary"
+    action: output
+    arguments:
+      content: |
+        Libvirt Provider Info:
+          Base images: {{ images | length }} (using '{{ BASE_IMAGE }}')
+          Networks: {{ networks }}
+          Storage pools: {{ pools }}
+      destination: stdout
+
+  # ============================================================================
+  # SECTION 2: Checkout
+  # ============================================================================
+
+  - name: "Checkout a VM from base image"
+    action: checkout
+    arguments:
+      libvirt_image: "{{ BASE_IMAGE }}"
+      ram: "{{ MEMORY_MB }}"
+      cpus: "{{ CPUS }}"
+      auth: basic
+    capture:
+      as: checkout_result
+    on_error:
+      - name: "Log checkout failure"
+        action: output
+        arguments:
+          content: "ERROR: Libvirt checkout failed. Check libvirt daemon status and base image."
+          destination: stderr
+      - name: "Exit on checkout failure"
+        action: exit
+        arguments:
+          return_code: 10
+          message: "VM checkout failed - cannot continue smoke test"
+
+  - name: "Assert checkout returned a host"
+    action: assert
+    arguments:
+      that: "{{ scenario_inventory | length == 1 }}"
+      fail_msg: "Expected exactly 1 host in scenario inventory after checkout, got {{ scenario_inventory | length }}"
+
+  - name: "Capture host details"
+    action: output
+    arguments:
+      content: |
+        Checked out VM:
+          Name: {{ scenario_inventory[0].name }}
+          IP: {{ scenario_inventory[0].hostname }}
+          Provider: {{ scenario_inventory[0]._broker_provider }}
+      destination: stdout
+
+  - name: "Assert hostname was assigned"
+    action: assert
+    arguments:
+      that: "{{ scenario_inventory[0].hostname is defined and scenario_inventory[0].hostname != None }}"
+      fail_msg: "Checked-out VM has no IP address assigned"
+
+  - name: "Assert provider is Libvirt"
+    action: assert
+    arguments:
+      that: "{{ scenario_inventory[0]._broker_provider == 'Libvirt' }}"
+      fail_msg: "Expected provider 'Libvirt', got '{{ scenario_inventory[0]._broker_provider }}'"
+
+  # ============================================================================
+  # SECTION 3: SSH Connectivity & Command Execution
+  # ============================================================================
+
+  - name: "Verify SSH connectivity with hostname command"
+    action: ssh
+    arguments:
+      command: "hostname"
+    with:
+      hosts: "@scenario_inv[0]"
+    capture:
+      as: ssh_hostname
+    retry:
+      count: 5
+      delay: "10s"
+    on_error:
+      - name: "Log SSH failure"
+        action: output
+        arguments:
+          content: "ERROR: SSH connectivity failed. VM may not have booted or SSH auth is misconfigured."
+          destination: stderr
+      - name: "Checkin failed VM"
+        action: checkin
+        with:
+          hosts: scenario_inventory
+      - name: "Exit on SSH failure"
+        action: exit
+        arguments:
+          return_code: 11
+          message: "SSH connectivity test failed"
+
+  - name: "Assert hostname command succeeded"
+    action: assert
+    arguments:
+      that: "{{ ssh_hostname.status == 0 }}"
+      fail_msg: "hostname command failed with status {{ ssh_hostname.status }}"
+
+  - name: "Report SSH hostname result"
+    action: output
+    arguments:
+      content: "SSH connectivity confirmed - hostname: {{ ssh_hostname.stdout.strip() }}"
+      destination: stdout
+
+  - name: "Run uptime command"
+    action: ssh
+    arguments:
+      command: "uptime"
+    with:
+      hosts: "@scenario_inv[0]"
+    capture:
+      as: ssh_uptime
+
+  - name: "Assert uptime command succeeded"
+    action: assert
+    arguments:
+      that: "{{ ssh_uptime.status == 0 }}"
+      fail_msg: "uptime command failed with status {{ ssh_uptime.status }}"
+
+  - name: "Create a test file via SSH"
+    action: ssh
+    arguments:
+      command: "echo '{{ TEST_STRING }}' > /tmp/broker_test.txt && cat /tmp/broker_test.txt"
+    with:
+      hosts: "@scenario_inv[0]"
+    capture:
+      as: ssh_write
+
+  - name: "Assert test file creation succeeded"
+    action: assert
+    arguments:
+      that: "{{ ssh_write.status == 0 and TEST_STRING in ssh_write.stdout }}"
+      fail_msg: "Test file creation failed or content mismatch. Status: {{ ssh_write.status }}, Output: {{ ssh_write.stdout }}"
+
+  - name: "Read test file back"
+    action: ssh
+    arguments:
+      command: "cat /tmp/broker_test.txt"
+    with:
+      hosts: "@scenario_inv[0]"
+    capture:
+      as: ssh_read
+
+  - name: "Assert test file content is correct"
+    action: assert
+    arguments:
+      that: "{{ ssh_read.status == 0 and TEST_STRING in ssh_read.stdout }}"
+      fail_msg: "Test file read failed or content mismatch. Expected '{{ TEST_STRING }}', got: {{ ssh_read.stdout }}"
+
+  - name: "Report SSH command execution results"
+    action: output
+    arguments:
+      content: |
+        SSH command execution validated:
+          - hostname: SUCCESS
+          - uptime: SUCCESS
+          - file write/read: SUCCESS (marker: {{ TEST_STRING }})
+      destination: stdout
+
+  # ============================================================================
+  # SECTION 4: Hypervisor Actions (Execute)
+  # ============================================================================
+
+  - name: "Test pause action"
+    action: execute
+    arguments:
+      libvirt_action: pause
+      libvirt_vm: "{{ scenario_inventory[0].name }}"
+    capture:
+      as: pause_result
+    on_error: continue
+
+  - name: "Assert pause succeeded"
+    action: assert
+    arguments:
+      that: "{{ pause_result is defined and pause_result == 0 }}"
+      fail_msg: "Pause action failed: {{ pause_result }}"
+
+  - name: "Test resume action"
+    action: execute
+    arguments:
+      libvirt_action: resume
+      libvirt_vm: "{{ scenario_inventory[0].name }}"
+    capture:
+      as: resume_result
+    on_error: continue
+
+  - name: "Assert resume succeeded"
+    action: assert
+    arguments:
+      that: "{{ resume_result is defined and resume_result == 0 }}"
+      fail_msg: "Resume action failed: {{ resume_result }}"
+
+  - name: "Verify VM is responsive after resume"
+    action: ssh
+    arguments:
+      command: "echo resumed"
+    with:
+      hosts: "@scenario_inv[0]"
+    capture:
+      as: ssh_after_resume
+    retry:
+      count: 3
+      delay: "5s"
+
+  - name: "Assert VM responsive after resume"
+    action: assert
+    arguments:
+      that: "{{ ssh_after_resume.status == 0 }}"
+      fail_msg: "VM not responsive after resume (status {{ ssh_after_resume.status }})"
+
+  - name: "Test reboot action"
+    action: execute
+    arguments:
+      libvirt_action: reboot
+      libvirt_vm: "{{ scenario_inventory[0].name }}"
+    capture:
+      as: reboot_result
+    on_error: continue
+
+  - name: "Assert reboot initiated"
+    action: assert
+    arguments:
+      that: "{{ reboot_result is defined and reboot_result == 0 }}"
+      fail_msg: "Reboot action failed: {{ reboot_result }}"
+
+  - name: "Wait for VM to reboot and come back up"
+    action: output
+    arguments:
+      content: "Waiting for VM to reboot (this usually takes 20-30 seconds)..."
+      destination: stdout
+
+  - name: "Poll for VM to be responsive via local SSH command"
+    action: local_exec
+    arguments:
+      command: |
+        # Get the IP from the inventory
+        IP="{{ scenario_inventory[0].hostname }}"
+        PASSWORD="dog8code"  # Default broker password for --auth basic
+
+        # Wait for SSH to be ready (new connection each attempt)
+        for i in {1..20}; do
+          # Use sshpass with password auth (what --auth basic sets up)
+          if command -v sshpass >/dev/null 2>&1; then
+            if sshpass -p "$PASSWORD" ssh -o StrictHostKeyChecking=no \
+                       -o UserKnownHostsFile=/dev/null -o ConnectTimeout=3 \
+                       root@$IP "uptime" 2>/dev/null; then
+              echo "VM responsive after $i attempts (with sshpass)"
+              exit 0
+            fi
+          else
+            # Fallback: try without password (in case keys are set up)
+            if ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+                   -o ConnectTimeout=3 -o PreferredAuthentications=publickey \
+                   root@$IP "uptime" 2>/dev/null; then
+              echo "VM responsive after $i attempts (with keys)"
+              exit 0
+            fi
+          fi
+          echo "Attempt $i: VM not ready yet..."
+          sleep 5
+        done
+        echo "VM did not respond after 20 attempts (100 seconds)"
+        exit 1
+    capture:
+      as: reboot_poll
+    retry:
+      count: 1
+      delay: "1s"
+
+  - name: "Assert VM responsive after reboot"
+    action: assert
+    arguments:
+      that: "{{ reboot_poll.status == 0 }}"
+      fail_msg: "VM not responsive after reboot. Output: {{ reboot_poll.stdout }}"
+
+  - name: "Report execute action results"
+    action: output
+    arguments:
+      content: |
+        Hypervisor actions validated:
+          - pause: SUCCESS (result={{ pause_result }})
+          - resume: SUCCESS (result={{ resume_result }})
+          - reboot: SUCCESS (result={{ reboot_result }})
+          - post-reboot SSH: SUCCESS
+      destination: stdout
+
+  # ============================================================================
+  # SECTION 5: Inventory Query
+  # ============================================================================
+
+  - name: "Query Libvirt inventory (domains)"
+    action: provider_info
+    arguments:
+      provider: Libvirt
+      query: domains
+    capture:
+      as: domains
+    on_error: continue
+
+  - name: "Assert our VM appears in inventory"
+    action: assert
+    arguments:
+      that: "{{ scenario_inventory[0].name in domains }}"
+      fail_msg: "VM '{{ scenario_inventory[0].name }}' not found in Libvirt domains inventory. Found: {{ domains }}"
+
+  - name: "Report inventory query result"
+    action: output
+    arguments:
+      content: "Inventory query confirmed VM '{{ scenario_inventory[0].name }}' is present in Libvirt domains"
+      destination: stdout
+
+  # ============================================================================
+  # SECTION 6: Cleanup & Verification
+  # ============================================================================
+
+  - name: "Final smoke test summary"
+    action: output
+    arguments:
+      content: |
+
+        ====================================
+        LIBVIRT SMOKE TEST COMPLETE
+        ====================================
+        VM tested:     {{ scenario_inventory[0].name }}
+        Base image:    {{ BASE_IMAGE }}
+        Memory (MB):   {{ MEMORY_MB }}
+        vCPUs:         {{ CPUS }}
+        IP address:    {{ scenario_inventory[0].hostname }}
+        ====================================
+        All checks PASSED:
+          ✓ Provider info queries
+          ✓ VM checkout
+          ✓ SSH connectivity
+          ✓ Command execution
+          ✓ Hypervisor actions (pause/resume/reboot)
+          ✓ Inventory queries
+        ====================================
+      destination: stdout
+
+  - name: "Release the test VM"
+    action: checkin
+    with:
+      hosts: scenario_inventory
+    on_error:
+      - name: "Log checkin failure"
+        action: output
+        arguments:
+          content: "WARNING: VM release failed. Manual cleanup required for {{ scenario_inventory[0].name }}"
+          destination: stderr
+      - name: "Exit with warning"
+        action: exit
+        arguments:
+          return_code: 5
+          message: "Smoke test completed but VM cleanup failed"
+
+  - name: "Verify VM was removed from domains inventory"
+    action: provider_info
+    arguments:
+      provider: Libvirt
+      query: domains
+    capture:
+      as: domains_after_cleanup
+    retry:
+      count: 3
+      delay: "3s"
+    on_error: continue
+
+  - name: "Assert VM no longer in inventory"
+    action: assert
+    arguments:
+      that: "{{ domains_after_cleanup is defined and (domains_after_cleanup | length == 0 or 'broker_' not in (domains_after_cleanup | join(' '))) }}"
+      fail_msg: "VM still present in inventory after checkin. Found domains: {{ domains_after_cleanup }}"
+
+  - name: "Confirm cleanup successful"
+    action: output
+    arguments:
+      content: |
+        ====================================
+        VM successfully released and removed from Libvirt inventory.
+        Smoke test PASSED - all assertions validated.
+        ====================================
+      destination: stdout

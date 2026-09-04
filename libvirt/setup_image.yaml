@@ -1,0 +1,159 @@
+_spec_ver: 3
+description: >-
+  Orchestrates the complete libvirt image setup workflow. Detects image type
+  (cloud vs regular) and routes to the appropriate preparation scenario.
+  Supports importing from URL, local path, or guiding to manual download.
+author: "Broker"
+tags: ["libvirt", "setup", "orchestrator"]
+
+variables:
+  IMAGE_SOURCE: ""     # Optional: URL or local path to import from
+  IMAGE_NAME: ""       # Required: Name for the image in the pool
+  SKIP_IMPORT: "false" # Set to "true" if image is already in pool
+  FORCE_METHOD: ""     # Optional: "cloud", "regular", or "manual" to skip detection
+  STORAGE_POOL: "default"
+
+steps:
+  - name: "Validate IMAGE_NAME was provided"
+    action: assert
+    arguments:
+      that: "{{ IMAGE_NAME != '' }}"
+      fail_msg: |
+        IMAGE_NAME is required.
+
+        Usage examples:
+          # Import and setup a cloud image from URL:
+          broker scenarios execute setup_image \
+            IMAGE_SOURCE=https://fedora.osuosl.org/.../Fedora-Cloud-Base-*.qcow2 \
+            IMAGE_NAME=fedora-cloud.qcow2
+
+          # Setup an existing image in the pool:
+          broker scenarios execute setup_image \
+            IMAGE_NAME=fed44.qcow2 \
+            SKIP_IMPORT=true
+
+          # Get manual download instructions:
+          broker scenarios execute setup_image \
+            FORCE_METHOD=manual
+
+  # Phase 1: Import (if needed)
+  - name: "Import image from source"
+    when: "{{ SKIP_IMPORT == 'false' and IMAGE_SOURCE != '' }}"
+    action: local_exec
+    arguments:
+      command: |
+        # Determine if IMAGE_SOURCE is a URL or path
+        if [[ "{{ IMAGE_SOURCE }}" =~ ^https?:// ]]; then
+          broker scenarios execute import_image \
+            IMAGE_URL="{{ IMAGE_SOURCE }}" \
+            IMAGE_NAME="{{ IMAGE_NAME }}" \
+            STORAGE_POOL="{{ STORAGE_POOL }}"
+        else
+          broker scenarios execute import_image \
+            IMAGE_PATH="{{ IMAGE_SOURCE }}" \
+            IMAGE_NAME="{{ IMAGE_NAME }}" \
+            STORAGE_POOL="{{ STORAGE_POOL }}"
+        fi
+      timeout: 3600
+      stream: true
+    capture:
+      as: import_result
+    on_error: continue
+
+  - name: "Check if import succeeded"
+    when: "{{ SKIP_IMPORT == 'false' and IMAGE_SOURCE != '' }}"
+    action: assert
+    arguments:
+      that: "{{ import_result.status == 0 }}"
+      fail_msg: "Image import failed. See output above for manual instructions."
+
+  # Phase 2: Detection (unless FORCE_METHOD is set)
+  - name: "Detect image capabilities"
+    when: "{{ FORCE_METHOD == '' }}"
+    action: execute
+    arguments:
+      libvirt_image_name: "{{ IMAGE_NAME }}"
+    capture:
+      as: caps
+    on_error: continue
+
+  - name: "Handle detection failure"
+    when: "{{ FORCE_METHOD == '' and (caps is not defined or caps.image_type is not defined) }}"
+    action: output
+    arguments:
+      content: |
+        ⚠️  Could not detect image capabilities.
+
+        This usually means virt-inspector is not installed.
+        Install it: sudo dnf install libguestfs-tools-c
+
+        Or specify setup method manually:
+          FORCE_METHOD=cloud    (for official cloud images)
+          FORCE_METHOD=regular  (to install cloud-init)
+          FORCE_METHOD=manual   (for download instructions)
+      destination: stderr
+
+  - name: "Exit if detection failed and no force method"
+    when: "{{ FORCE_METHOD == '' and (caps is not defined or caps.image_type is not defined) }}"
+    action: exit
+    arguments:
+      return_code: 1
+      message: "Image detection failed and no FORCE_METHOD specified"
+
+  # Phase 3: Route to appropriate setup based on image type or FORCE_METHOD
+
+  # Route: Cloud image (ready to use)
+  - name: "Prepare cloud image"
+    when: "{{ (FORCE_METHOD == 'cloud') or (FORCE_METHOD == '' and caps.image_type == 'cloud') }}"
+    action: local_exec
+    arguments:
+      command: |
+        broker scenarios execute validate_cloud_image \
+          IMAGE_NAME="{{ IMAGE_NAME }}"
+      stream: true
+    capture:
+      as: prepare_cloud
+
+  # Route: Regular image (needs cloud-init installation)
+  - name: "Prepare regular image"
+    when: "{{ (FORCE_METHOD == 'regular') or (FORCE_METHOD == '' and caps.image_type == 'server') }}"
+    action: local_exec
+    arguments:
+      command: |
+        broker scenarios execute prepare_regular_image \
+          IMAGE_NAME="{{ IMAGE_NAME }}" \
+          STORAGE_POOL="{{ STORAGE_POOL }}"
+      timeout: 1200
+      stream: true
+    capture:
+      as: prepare_regular
+
+  # Route: Minimal image or manual request (show download guide)
+  - name: "Show manual download guide"
+    when: "{{ (FORCE_METHOD == 'manual') or (FORCE_METHOD == '' and caps.image_type == 'minimal') }}"
+    action: local_exec
+    arguments:
+      command: "broker scenarios execute cloud_image_guide"
+      stream: true
+    capture:
+      as: manual_guide
+
+  # Summary
+  - name: "Setup complete"
+    when: "{{ (FORCE_METHOD == 'cloud' or (FORCE_METHOD == '' and caps.image_type == 'cloud')) or (prepare_cloud is defined and prepare_cloud.status == 0) }}"
+    action: output
+    arguments:
+      content: |
+        ╔═══════════════════════════════════════════════════════════════════╗
+        ║  ✅ Libvirt Setup Complete                                       ║
+        ╚═══════════════════════════════════════════════════════════════════╝
+
+        Image '{{ IMAGE_NAME }}' is ready for broker use!
+
+        Quick start:
+          broker checkout --libvirt-image {{ IMAGE_NAME }} --auth basic
+          broker checkout --libvirt-image {{ IMAGE_NAME }} --auth key
+          broker checkout --libvirt-image {{ IMAGE_NAME }} --auth user:password
+
+        The --auth flag injects SSH credentials via cloud-init on first boot.
+      destination: stdout

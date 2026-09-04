@@ -1,0 +1,139 @@
+_spec_ver: 3
+description: >-
+  Import a qcow2 image into the libvirt storage pool from either a URL or local path.
+  Downloads to user-writable location, then provides command to copy to pool with sudo.
+author: "Broker"
+tags: ["libvirt", "import", "image"]
+
+variables:
+  IMAGE_URL: ""        # Optional: URL to download from (HTTP/HTTPS)
+  IMAGE_PATH: ""       # Optional: Local file path to copy
+  IMAGE_NAME: ""       # Required: Name to give the image in the pool
+  STORAGE_POOL: ""     # Optional: auto-detects if not provided
+  WORKING_DIR: "$HOME/libvirt-working"  # User-writable download location
+
+steps:
+  - name: "Validate IMAGE_NAME was provided"
+    action: assert
+    arguments:
+      that: "{{ IMAGE_NAME != '' }}"
+      fail_msg: "IMAGE_NAME is required. Usage: broker scenarios execute import_image IMAGE_NAME=my-image.qcow2 IMAGE_URL=https://... or IMAGE_PATH=/path/to/image.qcow2"
+
+  - name: "Validate at least one source was provided"
+    action: assert
+    arguments:
+      that: "{{ IMAGE_URL != '' or IMAGE_PATH != '' }}"
+      fail_msg: "Either IMAGE_URL or IMAGE_PATH must be provided"
+
+  - name: "Auto-detect storage pool"
+    action: local_exec
+    arguments:
+      command: |
+        REQUESTED="{{ STORAGE_POOL }}"
+        POOLS=$(virsh pool-list --name | grep -v '^$')
+
+        if [ -z "$POOLS" ]; then
+          echo "ERROR: No active storage pools found" >&2
+          exit 1
+        fi
+
+        if [ -n "$REQUESTED" ]; then
+          if echo "$POOLS" | grep -q "^${REQUESTED}$"; then
+            echo "$REQUESTED"
+          else
+            echo "ERROR: Pool '$REQUESTED' not found" >&2
+            exit 1
+          fi
+        elif echo "$POOLS" | grep -q "^default$"; then
+          echo "default"
+        else
+          echo "$POOLS" | head -1
+        fi
+    capture:
+      as: pool_result
+
+  - name: "Check if image already exists in pool"
+    action: local_exec
+    arguments:
+      command: "virsh pool-refresh {{ pool_result.stdout.strip() }} && virsh vol-info --pool {{ pool_result.stdout.strip() }} {{ IMAGE_NAME }}"
+    capture:
+      as: exists_check
+    on_error: continue
+
+  - name: "Skip import if image already exists"
+    when: "{{ exists_check.status == 0 }}"
+    action: output
+    arguments:
+      content: |
+        ℹ️  Image '{{ IMAGE_NAME }}' already exists in pool '{{ pool_result.stdout.strip() }}'.
+        Skipping import. Delete it first if you want to re-import.
+      destination: stdout
+
+  - name: "Exit if image already exists"
+    when: "{{ exists_check.status == 0 }}"
+    action: exit
+    arguments:
+      return_code: 0
+      message: "Image already exists"
+
+  - name: "Create working directory"
+    action: local_exec
+    arguments:
+      command: "mkdir -p {{ WORKING_DIR }}"
+
+  # URL-based import
+  - name: "Download image from URL to working directory"
+    when: "{{ IMAGE_URL != '' }}"
+    action: local_exec
+    arguments:
+      command: |
+        WORKING_DIR=$(eval echo "{{ WORKING_DIR }}")
+        echo "Downloading {{ IMAGE_URL }} to $WORKING_DIR/{{ IMAGE_NAME }}..."
+        curl -fL --progress-bar -o "$WORKING_DIR/{{ IMAGE_NAME }}" "{{ IMAGE_URL }}"
+      timeout: 3600
+      stream: true
+    capture:
+      as: download
+
+  # Path-based import
+  - name: "Copy local image to working directory"
+    when: "{{ IMAGE_PATH != '' and IMAGE_URL == '' }}"
+    action: local_exec
+    arguments:
+      command: |
+        SOURCE="{{ IMAGE_PATH }}"
+        # Expand shell variables
+        SOURCE=$(eval echo "$SOURCE")
+        WORKING_DIR=$(eval echo "{{ WORKING_DIR }}")
+
+        if [ ! -f "$SOURCE" ]; then
+          echo "ERROR: Source image not found: $SOURCE" >&2
+          exit 1
+        fi
+
+        echo "Copying $SOURCE to $WORKING_DIR/{{ IMAGE_NAME }}..."
+        cp "$SOURCE" "$WORKING_DIR/{{ IMAGE_NAME }}"
+      timeout: 600
+    capture:
+      as: copy_to_working
+
+  - name: "Provide copy command"
+    action: output
+    arguments:
+      content: |
+        ✅ Image downloaded to working directory!
+
+        To complete the import, copy it to the libvirt pool with:
+          sudo -E env PATH=$PATH broker scenarios execute copy_image_to_pool \
+            IMAGE_NAME={{ IMAGE_NAME }} \
+            SOURCE_PATH={{ WORKING_DIR }}/{{ IMAGE_NAME }}
+
+        The copy_image_to_pool scenario will:
+        - Auto-detect your storage pool ({{ pool_result.stdout.strip() }})
+        - Copy the image with correct permissions
+        - Refresh the pool
+
+        Then you can use the image with:
+          broker scenarios execute detect_vm_capabilities IMAGE_NAME={{ IMAGE_NAME }}
+          broker checkout --libvirt-image {{ IMAGE_NAME }} --auth basic
+      destination: stdout
