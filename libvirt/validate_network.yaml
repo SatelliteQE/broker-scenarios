@@ -1,0 +1,228 @@
+_spec_ver: 3
+description: >-
+  Validate libvirt network configuration and diagnose connectivity issues.
+  Checks that the network exists, is active, has NAT forwarding, DHCP, and
+  IP forwarding enabled.
+author: "Broker"
+tags: ["libvirt", "network", "validate", "diagnostic"]
+
+variables:
+  NETWORK_NAME: "default"
+  EXPECTED_BRIDGE: "virbr0"
+
+steps:
+  - name: "Check if network exists"
+    action: local_exec
+    arguments:
+      command: "virsh -c qemu:///system net-info {{ NETWORK_NAME }}"
+    capture:
+      as: net_info
+    on_error: continue
+
+  - name: "Network not found - provide guidance"
+    when: "{{ net_info.status != 0 }}"
+    action: output
+    arguments:
+      content: |
+        ❌ Network '{{ NETWORK_NAME }}' not found
+
+        Available networks:
+        $(virsh -c qemu:///system net-list --all)
+
+        To create the default NAT network:
+          sudo -E env PATH=$PATH broker scenarios execute setup_network
+
+        Or specify a different network in broker_settings.yaml:
+          LIBVIRT:
+            network: <network-name>
+      destination: stdout
+
+  - name: "Exit if network not found"
+    when: "{{ net_info.status != 0 }}"
+    action: exit
+    arguments:
+      return_code: 1
+      message: "Network not found"
+
+  - name: "Parse network status"
+    when: "{{ net_info.status == 0 }}"
+    action: local_exec
+    arguments:
+      command: |
+        # Extract status fields
+        echo "=== Network Info ==="
+        echo "{{ net_info.stdout }}"
+        echo ""
+        echo "=== Status Checks ==="
+
+        # Check if active
+        if echo "{{ net_info.stdout }}" | grep -q "Active:.*yes"; then
+          echo "✅ Network is active"
+        else
+          echo "❌ Network is NOT active"
+        fi
+
+        # Check if autostart
+        if echo "{{ net_info.stdout }}" | grep -q "Autostart:.*yes"; then
+          echo "✅ Network autostarts on boot"
+        else
+          echo "⚠️  Network does NOT autostart (will not start after reboot)"
+        fi
+
+        # Check if persistent
+        if echo "{{ net_info.stdout }}" | grep -q "Persistent:.*yes"; then
+          echo "✅ Network configuration is persistent"
+        else
+          echo "⚠️  Network is transient (will be lost after libvirtd restart)"
+        fi
+    capture:
+      as: status_check
+
+  - name: "Get network XML for detailed analysis"
+    action: local_exec
+    arguments:
+      command: "virsh -c qemu:///system net-dumpxml {{ NETWORK_NAME }}"
+    capture:
+      as: net_xml
+
+  - name: "Analyze network configuration"
+    action: local_exec
+    arguments:
+      command: |
+        # Get XML directly instead of from variable (avoids Jinja2 escaping issues)
+        XML=$(virsh -c qemu:///system net-dumpxml {{ NETWORK_NAME }})
+        echo "=== Configuration Analysis ==="
+
+        # Check for NAT forwarding
+        if echo "$XML" | grep -q "<forward.*mode='nat'"; then
+          echo "✅ NAT forwarding enabled"
+        else
+          echo "⚠️  No NAT forwarding (VMs may not have internet access)"
+        fi
+
+        # Check for DHCP
+        if echo "$XML" | grep -q "<dhcp>"; then
+          echo "✅ DHCP configured"
+          # Extract DHCP range if possible
+          RANGE_START=$(echo "$XML" | grep -oP "(?<=range start=')[^']+")
+          RANGE_END=$(echo "$XML" | grep -oP "(?<=range end=')[^']+")
+          if [ -n "$RANGE_START" ] && [ -n "$RANGE_END" ]; then
+            echo "   DHCP range: $RANGE_START - $RANGE_END"
+          fi
+        else
+          echo "❌ No DHCP configured (VMs will not get IP addresses)"
+        fi
+
+        # Check bridge name
+        BRIDGE=$(echo "$XML" | grep -oP "(?<=bridge name=')[^']+")
+        if [ -n "$BRIDGE" ]; then
+          echo "✅ Bridge: $BRIDGE"
+        else
+          echo "⚠️  No bridge configured"
+        fi
+
+        # Check network address
+        IP_ADDR=$(echo "$XML" | grep -oP "(?<=ip address=')[^']+")
+        NETMASK=$(echo "$XML" | grep -oP "(?<=netmask=')[^']+")
+        if [ -n "$IP_ADDR" ]; then
+          echo "✅ Network: $IP_ADDR/$NETMASK"
+        fi
+    capture:
+      as: config_analysis
+
+  - name: "Check IP forwarding"
+    action: local_exec
+    arguments:
+      command: |
+        FORWARD=$(sysctl -n net.ipv4.ip_forward 2>/dev/null || echo 0)
+        echo "=== System Configuration ==="
+        if [ "$FORWARD" = "1" ]; then
+          echo "✅ IP forwarding enabled (net.ipv4.ip_forward=1)"
+        else
+          echo "❌ IP forwarding DISABLED (net.ipv4.ip_forward=$FORWARD)"
+          echo "   NAT will not work without IP forwarding!"
+          echo "   Fix: sudo -E env PATH=$PATH broker scenarios execute setup_network"
+        fi
+    capture:
+      as: ip_forward_check
+
+  - name: "Check bridge interface exists"
+    action: local_exec
+    arguments:
+      command: |
+        echo "=== Bridge Interface ==="
+        if ip link show {{ EXPECTED_BRIDGE }} >/dev/null 2>&1; then
+          echo "✅ Bridge interface '{{ EXPECTED_BRIDGE }}' exists"
+          ip link show {{ EXPECTED_BRIDGE }} | head -2
+        else
+          echo "⚠️  Bridge interface '{{ EXPECTED_BRIDGE }}' not found"
+          echo "   (This is normal if no VMs are running - bridge is created on first VM start)"
+        fi
+    capture:
+      as: bridge_check
+    on_error: continue
+
+  - name: "Check firewall/NAT rules (iptables)"
+    action: local_exec
+    arguments:
+      command: |
+        echo "=== Firewall/NAT Rules ==="
+        if command -v iptables >/dev/null 2>&1; then
+          if iptables -t nat -L -n 2>/dev/null | grep -q {{ EXPECTED_BRIDGE }}; then
+            echo "✅ NAT rules present for {{ EXPECTED_BRIDGE }}"
+            echo ""
+            echo "NAT table rules:"
+            iptables -t nat -L -n -v 2>/dev/null | grep -A 3 {{ EXPECTED_BRIDGE }} | head -10
+          else
+            echo "⚠️  No NAT rules found for {{ EXPECTED_BRIDGE }}"
+            echo "   (This is normal if no VMs are running)"
+          fi
+        else
+          echo "ℹ️  iptables not available (may be using nftables)"
+        fi
+    capture:
+      as: firewall_check
+    on_error: continue
+
+  - name: "Display validation summary"
+    action: output
+    arguments:
+      content: |
+        ═══════════════════════════════════════════════════════════════
+        Network Validation Results for '{{ NETWORK_NAME }}'
+        ═══════════════════════════════════════════════════════════════
+
+        {{ status_check.stdout }}
+
+        {{ config_analysis.stdout }}
+
+        {{ ip_forward_check.stdout }}
+
+        {{ bridge_check.stdout }}
+
+        {{ firewall_check.stdout }}
+
+        ═══════════════════════════════════════════════════════════════
+
+        {% if "Active:" in net_info.stdout and "yes" in net_info.stdout and "NAT forwarding enabled" in config_analysis.stdout and "IP forwarding enabled" in ip_forward_check.stdout %}
+        ✅ OVERALL STATUS: Network is properly configured for internet connectivity
+
+        Your VMs should have internet access. If they don't:
+        1. Ensure qemu-guest-agent is installed in the base image
+        2. Check VM's network interface is up (inside VM: ip link)
+        3. Check VM can reach gateway (inside VM: ping 192.168.122.1)
+        4. Check DNS resolution (inside VM: ping 8.8.8.8)
+
+        {% else %}
+        ⚠️  OVERALL STATUS: Network has configuration issues
+
+        To fix, run:
+          sudo -E env PATH=$PATH broker scenarios execute setup_network
+
+        Or manually:
+          sudo virsh -c qemu:///system net-start {{ NETWORK_NAME }}
+          sudo virsh -c qemu:///system net-autostart {{ NETWORK_NAME }}
+          echo "net.ipv4.ip_forward=1" | sudo tee /etc/sysctl.d/99-libvirt.conf
+          sudo sysctl -p /etc/sysctl.d/99-libvirt.conf
+        {% endif %}
+      destination: stdout

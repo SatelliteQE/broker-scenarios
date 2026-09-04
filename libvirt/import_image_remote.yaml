@@ -1,0 +1,173 @@
+_spec_ver: 3
+description: >-
+  Import a qcow2 image into a REMOTE libvirt storage pool from a URL or local path.
+  Uses SSH to execute commands on the remote hypervisor.
+author: "Broker"
+tags: ["libvirt", "import", "image", "remote"]
+
+variables:
+  HYPERVISOR: ""       # Required: remote hypervisor hostname/IP
+  SSH_USER: "root"     # SSH user on hypervisor
+  IMAGE_URL: ""        # Optional: URL to download from (HTTP/HTTPS)
+  IMAGE_PATH: ""       # Optional: Local file path to upload
+  IMAGE_NAME: ""       # Required: Name to give the image in the pool
+  STORAGE_POOL: ""     # Optional: auto-detects if not provided
+
+steps:
+  - name: "Validate required parameters"
+    action: assert
+    arguments:
+      that: "{{ HYPERVISOR != '' and IMAGE_NAME != '' }}"
+      fail_msg: "HYPERVISOR and IMAGE_NAME are required. Usage: broker scenarios execute import_image_remote HYPERVISOR=host.example.com IMAGE_NAME=image.qcow2 IMAGE_URL=https://..."
+
+  - name: "Validate at least one source was provided"
+    action: assert
+    arguments:
+      that: "{{ IMAGE_URL != '' or IMAGE_PATH != '' }}"
+      fail_msg: "Either IMAGE_URL or IMAGE_PATH must be provided"
+
+  - name: "Auto-detect storage pool on remote"
+    action: local_exec
+    arguments:
+      command: |
+        ssh -o BatchMode=yes {{ SSH_USER }}@{{ HYPERVISOR }} bash <<'DETECT_POOL_EOF'
+        REQUESTED="{{ STORAGE_POOL }}"
+        POOLS=$(virsh pool-list --name | grep -v '^$')
+
+        if [ -z "$POOLS" ]; then
+          echo "ERROR: No active storage pools found" >&2
+          exit 1
+        fi
+
+        if [ -n "$REQUESTED" ]; then
+          if echo "$POOLS" | grep -q "^${REQUESTED}$"; then
+            echo "$REQUESTED"
+          else
+            echo "ERROR: Pool '$REQUESTED' not found" >&2
+            exit 1
+          fi
+        elif echo "$POOLS" | grep -q "^default$"; then
+          echo "default"
+        else
+          echo "$POOLS" | head -1
+        fi
+        DETECT_POOL_EOF
+    capture:
+      as: pool_result
+
+  - name: "Get pool path on remote"
+    action: local_exec
+    arguments:
+      command: "ssh -o BatchMode=yes {{ SSH_USER }}@{{ HYPERVISOR }} \"virsh pool-dumpxml {{ pool_result.stdout.strip() }} | grep -oP '(?<=<path>)[^<]+'\""
+    capture:
+      as: pool_path_result
+
+  - name: "Check if image already exists on remote"
+    action: local_exec
+    arguments:
+      command: "ssh -o BatchMode=yes {{ SSH_USER }}@{{ HYPERVISOR }} \"virsh pool-refresh {{ pool_result.stdout.strip() }} && virsh vol-info --pool {{ pool_result.stdout.strip() }} {{ IMAGE_NAME }}\""
+    capture:
+      as: exists_check
+    on_error: continue
+
+  - name: "Skip if image already exists"
+    when: "{{ exists_check.status == 0 }}"
+    action: output
+    arguments:
+      content: "Image '{{ IMAGE_NAME }}' already exists in pool '{{ pool_result.stdout.strip() }}' on {{ HYPERVISOR }}"
+      destination: stdout
+
+  - name: "Exit if already exists"
+    when: "{{ exists_check.status == 0 }}"
+    action: exit
+    arguments:
+      return_code: 0
+      message: "Image already exists"
+
+  # URL-based download
+  - name: "Download image from URL on remote"
+    when: "{{ IMAGE_URL != '' }}"
+    action: local_exec
+    arguments:
+      command: |
+        ssh -o BatchMode=yes {{ SSH_USER }}@{{ HYPERVISOR }} bash <<'DOWNLOAD_EOF'
+        POOL_PATH="{{ pool_path_result.stdout.strip() }}"
+        echo "Downloading {{ IMAGE_URL }} to $POOL_PATH/{{ IMAGE_NAME }}"
+        curl -fL --progress-bar -o "$POOL_PATH/{{ IMAGE_NAME }}" "{{ IMAGE_URL }}" 2>&1
+        DOWNLOAD_EOF
+      timeout: 3600
+    capture:
+      as: download
+
+  - name: "Assert download succeeded"
+    when: "{{ IMAGE_URL != '' }}"
+    action: assert
+    arguments:
+      that: "{{ download.status == 0 }}"
+      fail_msg: "Image download failed: {{ download.stderr }}"
+
+  # Path-based upload (using scp via ssh)
+  - name: "Upload local image to remote"
+    when: "{{ IMAGE_PATH != '' and IMAGE_URL == '' }}"
+    action: local_exec
+    arguments:
+      command: |
+        POOL_PATH="{{ pool_path_result.stdout.strip() }}"
+        SOURCE="{{ IMAGE_PATH }}"
+        # Expand shell variables
+        SOURCE=$(eval echo "$SOURCE")
+
+        if [ ! -f "$SOURCE" ]; then
+          echo "ERROR: Source file not found: $SOURCE" >&2
+          exit 1
+        fi
+
+        echo "Uploading $SOURCE to {{ HYPERVISOR }}:$POOL_PATH/{{ IMAGE_NAME }}"
+        scp "$SOURCE" "{{ SSH_USER }}@{{ HYPERVISOR }}:$POOL_PATH/{{ IMAGE_NAME }}"
+      timeout: 3600
+    capture:
+      as: upload
+
+  - name: "Assert upload succeeded"
+    when: "{{ IMAGE_PATH != '' and IMAGE_URL == '' }}"
+    action: assert
+    arguments:
+      that: "{{ upload.status == 0 }}"
+      fail_msg: "Image upload failed: {{ upload.stderr }}"
+
+  - name: "Refresh storage pool on remote"
+    action: local_exec
+    arguments:
+      command: "ssh -o BatchMode=yes {{ SSH_USER }}@{{ HYPERVISOR }} \"virsh pool-refresh {{ pool_result.stdout.strip() }}\""
+
+  - name: "Verify image is in pool"
+    action: local_exec
+    arguments:
+      command: "ssh -o BatchMode=yes {{ SSH_USER }}@{{ HYPERVISOR }} \"virsh vol-info --pool {{ pool_result.stdout.strip() }} {{ IMAGE_NAME }}\""
+    capture:
+      as: verify
+    retry:
+      count: 3
+      delay: "2s"
+
+  - name: "Assert verification succeeded"
+    action: assert
+    arguments:
+      that: "{{ verify.status == 0 }}"
+      fail_msg: "Image verification failed on remote hypervisor"
+
+  - name: "Success message"
+    action: output
+    arguments:
+      content: |
+        ✅ Image imported successfully to remote hypervisor!
+
+        Hypervisor: {{ HYPERVISOR }}
+        Pool: {{ pool_result.stdout.strip() }}
+        Image: {{ IMAGE_NAME }}
+        Path: {{ pool_path_result.stdout.strip() }}/{{ IMAGE_NAME }}
+
+        Next: detect capabilities or use with broker
+          broker scenarios execute detect_vm_capabilities IMAGE_NAME={{ IMAGE_NAME }}
+          broker checkout --provider-instance "uri=qemu+ssh://{{ SSH_USER }}@{{ HYPERVISOR }}/system" --libvirt-image {{ IMAGE_NAME }} --auth basic
+      destination: stdout

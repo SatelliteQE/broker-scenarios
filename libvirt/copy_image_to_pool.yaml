@@ -1,0 +1,104 @@
+_spec_ver: 3
+description: >-
+  Copy a prepared image from user workspace back to the libvirt storage pool.
+  REQUIRES SUDO - must be run with sudo permissions.
+author: "Broker"
+tags: ["libvirt", "image", "copy"]
+requires_sudo: true
+
+variables:
+  IMAGE_NAME: ""  # Required: name of the image file
+  SOURCE_PATH: ""  # Required: source path (e.g., $HOME/libvirt-working/image.qcow2)
+  STORAGE_POOL: ""  # Optional: auto-detects if not provided
+
+steps:
+  - name: "Validate IMAGE_NAME was provided"
+    action: assert
+    arguments:
+      that: "{{ IMAGE_NAME != '' }}"
+      fail_msg: "IMAGE_NAME is required. Usage: sudo broker scenarios execute copy_image_to_pool IMAGE_NAME=image.qcow2 SOURCE_PATH=$HOME/libvirt-working/image.qcow2"
+
+  - name: "Validate SOURCE_PATH was provided"
+    action: assert
+    arguments:
+      that: "{{ SOURCE_PATH != '' }}"
+      fail_msg: "SOURCE_PATH is required"
+
+  - name: "Auto-detect storage pool"
+    action: local_exec
+    arguments:
+      command: |
+        REQUESTED="{{ STORAGE_POOL }}"
+        POOLS=$(virsh pool-list --name | grep -v '^$')
+
+        if [ -n "$REQUESTED" ]; then
+          if echo "$POOLS" | grep -q "^${REQUESTED}$"; then
+            echo "$REQUESTED"
+          else
+            echo "ERROR: Pool '$REQUESTED' not found" >&2
+            exit 1
+          fi
+        elif echo "$POOLS" | grep -q "^default$"; then
+          echo "default"
+        else
+          echo "$POOLS" | head -1
+        fi
+    capture:
+      as: pool_result
+
+  - name: "Get pool path"
+    action: local_exec
+    arguments:
+      command: "virsh pool-dumpxml {{ pool_result.stdout.strip() }} | grep -oP '(?<=<path>)[^<]+'"
+    capture:
+      as: pool_path
+
+  - name: "Copy image to pool"
+    action: local_exec
+    arguments:
+      command: |
+        SOURCE="{{ SOURCE_PATH }}"
+        # Expand shell variables in source path
+        SOURCE=$(eval echo "$SOURCE")
+
+        POOL_PATH="{{ pool_path.stdout.strip() }}"
+        IMAGE="{{ IMAGE_NAME }}"
+
+        if [ ! -f "$SOURCE" ]; then
+          echo "ERROR: Source image not found: $SOURCE" >&2
+          exit 1
+        fi
+
+        echo "Copying $SOURCE to $POOL_PATH/$IMAGE"
+        cp "$SOURCE" "$POOL_PATH/$IMAGE"
+        chown qemu:qemu "$POOL_PATH/$IMAGE"
+        echo "Image copied successfully"
+      timeout: 600
+    capture:
+      as: copy_result
+
+  - name: "Refresh storage pool"
+    action: local_exec
+    arguments:
+      command: "virsh pool-refresh {{ pool_result.stdout.strip() }}"
+
+  - name: "Verify image is in pool"
+    action: local_exec
+    arguments:
+      command: "virsh vol-info --pool {{ pool_result.stdout.strip() }} {{ IMAGE_NAME }}"
+    capture:
+      as: verify
+
+  - name: "Success message"
+    action: output
+    arguments:
+      content: |
+        ✅ Image successfully copied to storage pool!
+
+        Pool: {{ pool_result.stdout.strip() }}
+        Image: {{ IMAGE_NAME }}
+        Path: {{ pool_path.stdout.strip() }}/{{ IMAGE_NAME }}
+
+        You can now use it with broker:
+          broker checkout --libvirt-image {{ IMAGE_NAME }} --auth basic
+      destination: stdout

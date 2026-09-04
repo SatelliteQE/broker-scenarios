@@ -1,10 +1,11 @@
+_spec_ver: 3
 description: Sync inventory from AnsibleTower and checkin all hosts.
 steps:
-  - name: Sync AnsibleTower
-    action: inventory
-    arguments:
-      sync: AnsibleTower
-  - name: Checkin all hosts
-    action: checkin
-    with:
-      hosts: inventory
+- name: Sync AnsibleTower
+  action: inventory
+  arguments:
+    sync: AnsibleTower
+- name: Checkin all hosts
+  action: checkin
+  with:
+    hosts: inventory

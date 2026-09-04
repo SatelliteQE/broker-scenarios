@@ -1,0 +1,65 @@
+_spec_ver: 3
+description: >-
+  Auto-detect an active libvirt storage pool. Prefers 'default' if available,
+  otherwise uses the first active pool found.
+author: "Broker"
+tags: ["libvirt", "storage", "detection"]
+
+variables:
+  STORAGE_POOL: ""  # Optional: if provided, validates it; otherwise auto-detects
+
+steps:
+  - name: "List active storage pools"
+    action: local_exec
+    arguments:
+      command: "virsh pool-list --name | grep -v '^$'"
+    capture:
+      as: pools_list
+    on_error: continue
+
+  - name: "Assert at least one pool exists"
+    action: assert
+    arguments:
+      that: "{{ pools_list.status == 0 and pools_list.stdout != '' }}"
+      fail_msg: |
+        No active storage pools found. Create one first:
+          virsh pool-define-as default dir --target /var/lib/libvirt/images
+          virsh pool-start default
+          virsh pool-autostart default
+
+  - name: "Determine storage pool to use"
+    action: local_exec
+    arguments:
+      command: |
+        POOLS="{{ pools_list.stdout }}"
+        REQUESTED="{{ STORAGE_POOL }}"
+
+        if [ -n "$REQUESTED" ]; then
+          # Validate requested pool exists
+          if echo "$POOLS" | grep -q "^${REQUESTED}$"; then
+            echo "$REQUESTED"
+          else
+            echo "ERROR: Pool '$REQUESTED' not found" >&2
+            exit 1
+          fi
+        elif echo "$POOLS" | grep -q "^default$"; then
+          # Prefer 'default' if it exists
+          echo "default"
+        else
+          # Use first available pool
+          echo "$POOLS" | head -1
+        fi
+    capture:
+      as: selected_pool
+
+  - name: "Assert pool detection succeeded"
+    action: assert
+    arguments:
+      that: "{{ selected_pool.status == 0 and selected_pool.stdout != '' }}"
+      fail_msg: "Failed to detect storage pool: {{ selected_pool.stderr }}"
+
+  - name: "Display selected pool"
+    action: output
+    arguments:
+      content: "Using storage pool: {{ selected_pool.stdout.strip() }}"
+      destination: stdout
