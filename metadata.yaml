@@ -2,7 +2,7 @@
 # Do NOT edit it manually — your changes will be overwritten on the next push to master.
 # See .github/workflows/update-metadata.yml for the generation trigger.
 
-generated_at: '2026-03-13T01:00:12Z'
+generated_at: '2026-09-16T15:45:09Z'
 scenarios:
 - path: ansibletower/deploy_sat_with_cap.yaml
   name: deploy_sat_with_cap
@@ -62,4 +62,108 @@ scenarios:
   - examples
   description: A simple scenario demonstrating basic checkout, ssh command 
     execution, and checkin flow with error handling and result output.
+- path: libvirt/cloud_image_guide.yaml
+  name: cloud_image_guide
+  categories:
+  - libvirt
+  description: Provides guidance for obtaining official cloud images that work 
+    out-of-the-box with Broker's --auth flags. Cloud images have cloud-init 
+    pre-installed.
+- path: libvirt/copy_image_to_pool.yaml
+  name: copy_image_to_pool
+  categories:
+  - libvirt
+  description: Copy a prepared image from user workspace back to the libvirt 
+    storage pool. REQUIRES SUDO - must be run with sudo permissions.
+- path: libvirt/detect_storage_pool.yaml
+  name: detect_storage_pool
+  categories:
+  - libvirt
+  description: Auto-detect an active libvirt storage pool. Prefers 'default' if 
+    available, otherwise uses the first active pool found.
+- path: libvirt/detect_vm_capabilities.yaml
+  name: detect_vm_capabilities
+  categories:
+  - libvirt
+  description: Detect capabilities of a libvirt base image (cloud-init, SSH, 
+    guest-agent). Uses virt-inspector to probe the image without booting it.
+- path: libvirt/import_image.yaml
+  name: import_image
+  categories:
+  - libvirt
+  description: Import a qcow2 image into the libvirt storage pool from either a 
+    URL or local path. Downloads to user-writable location, then provides 
+    command to copy to pool with sudo.
+- path: libvirt/import_image_remote.yaml
+  name: import_image_remote
+  categories:
+  - libvirt
+  description: Import a qcow2 image into a REMOTE libvirt storage pool from a 
+    URL or local path. Uses SSH to execute commands on the remote hypervisor.
+- path: libvirt/prepare_regular_image.yaml
+  name: prepare_regular_image
+  categories:
+  - libvirt
+  description: Prepare a regular (non-cloud) image for broker use by installing 
+    cloud-init WITHOUT requiring sudo for the main work. Uses 
+    LIBGUESTFS_BACKEND=direct to run virt-customize as a regular user. The image
+    is copied to ~/libvirt-working/ for modification, then use the 
+    copy_image_to_pool helper (with sudo) to move it back.
+- path: libvirt/setup_image.yaml
+  name: setup_image
+  categories:
+  - libvirt
+  description: Orchestrates the complete libvirt image setup workflow. Detects 
+    image type (cloud vs regular) and routes to the appropriate preparation 
+    scenario. Supports importing from URL, local path, or guiding to manual 
+    download.
+- path: libvirt/setup_network.yaml
+  name: setup_network
+  categories:
+  - libvirt
+  description: "Create and configure the default NAT network for libvirt to enable
+    internet connectivity for VMs. Creates the network if missing, enables IP forwarding,
+    and validates the configuration.\nREQUIRES SUDO - This scenario creates networks
+    and modifies sysctl settings."
+- path: libvirt/troubleshoot_network.yaml
+  name: troubleshoot_network
+  categories:
+  - libvirt
+  description: Comprehensive network troubleshooting for libvirt VMs with no 
+    internet access. Provides step-by-step diagnostics and fix suggestions.
+- path: libvirt/validate_cloud_image.yaml
+  name: validate_cloud_image
+  categories:
+  - libvirt
+  description: Validates that a cloud image is ready for broker use. Cloud 
+    images already have cloud-init installed, so no modification is needed.
+- path: libvirt/validate_network.yaml
+  name: validate_network
+  categories:
+  - libvirt
+  description: Validate libvirt network configuration and diagnose connectivity 
+    issues. Checks that the network exists, is active, has NAT forwarding, DHCP,
+    and IP forwarding enabled.
+- path: testing/smoke_libvirt_test.yaml
+  name: smoke_libvirt_test
+  categories:
+  - testing
+  description: "End-to-end smoke test for the Libvirt provider covering checkout,
+    SSH connectivity, command execution, hypervisor actions (pause/resume/reboot),
+    inventory queries, provider_info, and checkin with cleanup verification.\nThis
+    test uses --auth basic to inject broker's default SSH credentials at checkout
+    time, so no pre-customization of the base image is required. The password is set
+    via guest agent and sshd is configured to allow root password login.\nPREREQUISITES:\n\
+    \  1. Ensure broker_settings.yaml has ssh.host_password set (e.g., \"dog8code\"\
+    )\n  2. Base image should have qemu-guest-agent installed and running (most cloud
+    images do)"
+- path: testing/smoke_libvirt_test_no_ssh.yaml
+  name: smoke_libvirt_test_no_ssh
+  categories:
+  - testing
+  description: Smoke test for the Libvirt provider covering checkout, 
+    hypervisor-level actions, inventory queries, provider_info, and checkin 
+    WITHOUT requiring SSH access to the guest. This test is useful for 
+    validating the provider when the base image hasn't been customized with SSH 
+    credentials yet.
 schema_version: 1
